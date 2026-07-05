@@ -24,16 +24,20 @@ namespace ThreadPoolPro {
 
 template<typename F, typename... Args>
 auto ThreadPool::enqueue(F&& f, Args&&... args)
-    -> std::future<std::invoke_result_t<F, Args...>>
+    -> std::future<std::invoke_result_t<std::decay_t<F>, std::decay_t<Args>...>>
 {
-    using ReturnType = std::invoke_result_t<F, Args...>;
+    using ReturnType = std::invoke_result_t<
+        std::decay_t<F>,
+        std::decay_t<Args>...
+    >;
 
     std::packaged_task<ReturnType()> packagedTask(
-        [func = std::forward<F>(f),
+        [func = std::decay_t<F>(std::forward<F>(f)),
          argsTuple = std::make_tuple(std::forward<Args>(args)...)
-        ]() mutable {
+        ]() mutable -> ReturnType {
             return std::apply(std::move(func), std::move(argsTuple));
-        });
+        }
+    );
 
     auto future = packagedTask.get_future();
 
@@ -48,7 +52,7 @@ auto ThreadPool::enqueue(F&& f, Args&&... args)
 
 template<typename F>
 void ThreadPool::detach(F&& f) {
-    submit(Task(std::forward<F>(f)));
+    submit(Task(std::decay_t<F>(std::forward<F>(f))));
 }
 
 } // namespace ThreadPoolPro

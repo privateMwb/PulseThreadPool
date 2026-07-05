@@ -16,7 +16,7 @@
 //
 // ============================================================
 
-#include "ThreadPool.h"
+#include <ThreadPoolPro/ThreadPool.h>
 
 #include <chrono>
 #include <stdexcept>
@@ -248,21 +248,19 @@ namespace ThreadPoolPro {
     // ============================================================
 
     void ThreadPool::submit(Task&& task) {
-        if (currentWorker_ != nullptr) {
-            currentWorker_->queue_.pushBottom(std::move(task));
-        }
-        else {
-            std::lock_guard<std::mutex> lock(injectionMutex_);
+    if (stopRequested_.load(std::memory_order_acquire))
+        throw std::runtime_error("submit on stopped ThreadPool");
 
-            if (stopRequested_.load())
-                throw std::runtime_error("submit on stopped ThreadPool");
-
-            injectionQueue_.push_back(std::move(task));
-        }
-
-        pendingTasks_.fetch_add(1, std::memory_order_relaxed);
-        wakeOne();
+    if (currentWorker_ != nullptr) {
+        currentWorker_->queue_.pushBottom(std::move(task));
+    } else {
+        std::lock_guard<std::mutex> lock(injectionMutex_);
+        injectionQueue_.push_back(std::move(task));
     }
+
+    pendingTasks_.fetch_add(1, std::memory_order_release);
+    wakeOne();
+}
 
 
     // ============================================================

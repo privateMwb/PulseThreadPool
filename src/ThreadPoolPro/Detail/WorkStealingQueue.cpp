@@ -10,7 +10,7 @@
 //
 // ============================================================
 
-#include "WorkStealingQueue.h"
+#include <ThreadPoolPro/Detail/WorkStealingQueue.h>
 
 #include <cassert>
 #include <bit>
@@ -82,8 +82,6 @@ std::optional<Task> WorkStealingQueue::popBottom() {
 
     --bottom;
 
-    Buffer* buffer = buffer_.load(std::memory_order_relaxed);
-
     bottomIndex_.store(bottom, std::memory_order_relaxed);
 
     std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -95,21 +93,22 @@ std::optional<Task> WorkStealingQueue::popBottom() {
         return std::nullopt;
     }
 
-    std::optional<Task> result{ std::move(buffer->at(bottom)) };
+    Buffer* buffer = buffer_.load(std::memory_order_relaxed);
 
     if (top == bottom) {
         if (!topIndex_.compare_exchange_strong(
-            top,
-            top + 1,
-            std::memory_order_seq_cst,
-            std::memory_order_relaxed)) {
-            result.reset();
+                top,
+                top + 1,
+                std::memory_order_seq_cst,
+                std::memory_order_relaxed)) {
+            bottomIndex_.store(bottom + 1, std::memory_order_relaxed);
+            return std::nullopt;
         }
 
         bottomIndex_.store(bottom + 1, std::memory_order_relaxed);
     }
 
-    return result;
+    return std::optional<Task>{ std::move(buffer->at(bottom)) };
 }
 
 std::optional<Task> WorkStealingQueue::steal() {
@@ -124,17 +123,15 @@ std::optional<Task> WorkStealingQueue::steal() {
 
     Buffer* buffer = buffer_.load(std::memory_order_acquire);
 
-    std::optional<Task> result{ std::move(buffer->at(top)) };
-
     if (!topIndex_.compare_exchange_strong(
-        top,
-        top + 1,
-        std::memory_order_seq_cst,
-        std::memory_order_relaxed)) {
+      top,
+      top + 1,
+      std::memory_order_seq_cst,
+      std::memory_order_relaxed)) {
         return std::nullopt;
-    }
+      }
 
-    return result;
+    return std::optional<Task>{ std::move(buffer->at(top)) };
 }
 
 

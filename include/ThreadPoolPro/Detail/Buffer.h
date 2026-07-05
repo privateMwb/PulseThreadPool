@@ -27,7 +27,7 @@ struct Buffer {
     [[nodiscard]] Task& at(std::size_t index) noexcept;
 
     // Allocates a larger buffer and migrates the active task range.
-    [[nodiscard]] Buffer* grow(std::size_t bottom, std::size_t top) const;
+    [[nodiscard]] Buffer* grow(std::size_t bottom, std::size_t top);
 };
 
 } // namespace ThreadPoolPro::Detail

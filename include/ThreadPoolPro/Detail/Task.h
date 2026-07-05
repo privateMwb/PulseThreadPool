@@ -46,7 +46,7 @@ public:
     Task(const Task&)            = delete;
     Task& operator=(const Task&) = delete;
 
-    ~Task();
+    ~Task() noexcept;
 
     // Task execution.
     void operator()();
