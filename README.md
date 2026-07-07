@@ -1,10 +1,10 @@
-# Pulse Thread Pool
+# PulseThreadPool
 
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-blue)](https://en.cppreference.com/w/cpp/23)
-[![Status](https://img.shields.io/badge/status-learning%20project-green)](https://github.com/privateMwb/Pulse-Thread-Pool)
+[![Status](https://img.shields.io/badge/status-learning%20project-green)](https://github.com/privateMwb/PulseThreadPool)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A thread pool implemented from scratch in **C++23**, built to explore concurrency primitives, task lifecycle management, move-only callable support, and real performance tradeoffs against `std::async` and raw `std::thread`.
+**PulseThreadPool** is a from-scratch, production-oriented thread pool written in modern C++23. It was built as a deep dive into concurrent scheduler design — per-worker work-stealing deques, small-buffer-optimized task storage, manual vtable type erasure, and the memory-ordering discipline a lock-free scheduler needs to survive real contention.
 
 ---
 
@@ -13,599 +13,529 @@ A thread pool implemented from scratch in **C++23**, built to explore concurrenc
 - [Overview](#overview)
 - [Motivation](#motivation)
 - [Features](#features)
-- [Design Overview](#design-overview)
-  - [Internal Structure](#internal-structure)
-  - [Worker Loop](#worker-loop)
-  - [MoveOnlyTask](#moveonlytask)
-  - [ActiveTaskGuard](#activetaskguard)
-  - [Pause & Resume](#pause--resume)
-  - [Shutdown Modes](#shutdown-modes)
-  - [Exception Handling](#exception-handling)
-- [Complexity](#complexity)
-- [Quick Example](#quick-example)
-  - [Fire-and-Forget](#fire-and-forget-execute)
-  - [Future Results](#future-results-enqueue)
-  - [Argument Forwarding](#argument-forwarding)
-  - [Move-Only Callables](#move-only-callables)
-  - [Pause & Resume](#pause--resume-1)
-  - [Shutdown Modes](#shutdown-modes-1)
-  - [Exception Handling](#exception-handling-1)
-  - [Pool Statistics](#pool-statistics)
+- [Quick Start](#quick-start)
 - [Core API](#core-api)
-  - [Constructor & Destructor](#constructor--destructor)
-  - [Task Submission](#task-submission)
-  - [Control](#control)
-  - [Introspection](#introspection)
-- [Benchmark Results](#benchmark-results)
-  - [Task Throughput](#task-throughput)
-  - [Future Latency](#future-latency)
-  - [Mixed Workload](#mixed-workload)
-  - [Contention](#contention)
-  - [Summary](#summary)
+- [Design Overview](#design-overview)
+- [Complexity](#complexity)
+- [Benchmarks](#benchmarks)
 - [Project Structure](#project-structure)
-- [Build Instructions](#build-instructions)
-- [Notes](#notes)
-- [Contributing](#contributing)
+- [Building from Source](#building-from-source)
+- [Known Limitations](#known-limitations)
 - [License](#license)
 
 ---
 
 ## Overview
 
-Pulse Thread Pool is a fixed-size thread pool that pre-spawns worker threads at construction and keeps them alive until shutdown. Tasks are submitted to a shared queue and dispatched to idle workers via condition variable signaling.
+`ThreadPoolPro::ThreadPool` is a fixed-size worker pool built around a Chase-Lev work-stealing deque per worker, backed by a small-buffer-optimized, move-only task type. It focuses on the problems a production scheduler actually has to solve internally:
 
-It supports two submission modes — `execute()` for fire-and-forget tasks and `enqueue()` for tasks that return a `std::future` — along with pause/resume control, two shutdown strategies, move-only callable support, and live introspection of pool state.
+- Lock-free push/pop on the owning worker's own queue, with lock-free stealing from idle workers
+- Zero-allocation task storage for small callables (SBO), heap fallback only when needed
+- A single mutex-guarded injection queue for the one path that genuinely needs it: submission from non-worker threads
+- Correct memory ordering around the classic Chase-Lev "last element" contention case
+- Two independent submission APIs (`enqueue()` for a result, `detach()` for fire-and-forget) with two different exception-visibility contracts
+
+On top of this foundation, PulseThreadPool adds pause/resume control, two shutdown modes, and a small set of runtime introspection methods, plus a benchmark suite covering construction, submission, dispatch latency, stealing, contention, and throughput.
 
 ---
 
 ## Motivation
 
-This project was built to deeply understand:
+This project was built to understand, in depth:
 
-- Thread lifecycle management (`std::thread`, join, detach)
-- Synchronization primitives (`std::mutex`, `std::condition_variable`)
-- Atomic operations and memory ordering
-- Move-only type design (`std::unique_ptr`, type-erased wrappers)
-- `std::future` and `std::packaged_task` mechanics
-- RAII guards for concurrent resource tracking
-- Task queue design and contention under load
-- Performance tradeoffs vs `std::async` and raw `std::thread`
+- Work-stealing deque design (Chase-Lev) and exactly where its lock-free guarantees actually hold
+- Where a "torn read" on a contended slot is benign (trivial, pointer-sized payloads) versus where it's a real data race (non-trivial, move-only payloads) — and what that means for algorithm ordering
+- Small-buffer optimization for type-erased callables, and the manual function-pointer vtable that avoids `virtual` dispatch
+- Correct wake/notify discipline around a condition variable shared with atomic predicate state
+- The real difference between "drain everything" and "discard everything" shutdown semantics, and how easy it is to accidentally implement neither
+- Exception propagation differences between a future-returning API and a fire-and-forget one
+- Rigorous benchmarking of a concurrent structure, including learning to distrust benchmark numbers that don't reproduce
 
 ---
 
 ## Features
 
-- Fixed-size worker thread pool (threads pre-spawned at construction)
-- `execute()` — fire-and-forget task submission (move-only callable support)
-- `enqueue()` — task submission returning `std::future<T>` with full argument forwarding
-- `pause()` / `resume()` — suspend and resume task dispatching without stopping threads
-- `shutdown(mode)` — two modes: drain the queue or discard pending tasks
-- Move-only callable support via a custom type-erased `MoveOnlyTask` wrapper
-- RAII-based active task tracking via `ActiveTaskGuard`
-- Exception isolation: `execute()` exceptions are caught and counted; `enqueue()` exceptions are forwarded through the future
-- Live introspection: `activeTaskCount()`, `queuedTasks()`, `threadCount()`, `exceptionCount()`
-- State inspection: `isPaused()`, `isStopped()`
-- Non-copyable, non-movable (safe shared ownership via pointer/reference)
+| Feature | Description |
+|---|---|
+| Per-worker work-stealing deque | Each worker owns a lock-free Chase-Lev deque; idle workers steal from busy ones instead of contending on one global queue |
+| SBO task storage | Callables up to 48 bytes are stored inline with no heap allocation; larger callables fall back to the heap automatically |
+| Manual vtable type erasure | `Detail::Task` dispatches through a function-pointer table instead of `virtual`, avoiding vtable-pointer indirection through a base class |
+| Two submission APIs | `enqueue()` returns a `std::future` for the result; `detach()` is a lower-overhead fire-and-forget path |
+| Pause / resume | Stop picking up new work without tearing the pool down; in-flight tasks always run to completion |
+| Two shutdown modes | `FinishTasks` drains everything queued; `DiscardTasks` abandons it |
+| Cache-line-padded control state | `stopRequested_`, `paused_`, and the runtime counters each sit on their own cache line to avoid false sharing |
+| Runtime introspection | `activeTaskCount()`, `queuedTasks()`, `idleThreadCount()`, `exceptionCount()`, `empty()`, and more |
 
 ---
 
-## Design Overview
+## Quick Start
 
-### Internal Structure
-
-```
-ThreadPool
-├── workers[]          — fixed vector of std::thread (pre-spawned)
-├── taskQueue          — std::queue<MoveOnlyTask> (shared work queue)
-├── queueMutex         — std::mutex (guards taskQueue)
-├── condition          — std::condition_variable (wakes idle workers)
-├── stopFlag           — std::atomic<bool> (signals shutdown)
-├── paused             — std::atomic<bool> (suspends task dispatch)
-├── shutdownMode       — FinishTasks | DiscardTasks
-├── activeTasks        — std::atomic<size_t> (tasks currently executing)
-└── exceptionCounter   — std::atomic<size_t> (execute() exceptions caught)
-```
-
----
-
-### Worker Loop
-
-Each worker thread runs the same loop from construction until shutdown:
-
-```
-while (true)
-    ↓
-wait on condition_variable
-    ↓
-wake when: stopFlag || (!paused && !taskQueue.empty())
-    ↓
-if stopFlag:
-    DiscardTasks → return immediately
-    FinishTasks  → return only when queue is empty
-    ↓
-pop task from queue
-    ↓
-ActiveTaskGuard (increment activeTasks)
-    ↓
-execute task
-    ↓
-catch any exception → increment exceptionCounter
-    ↓
-ActiveTaskGuard destructs (decrement activeTasks)
-```
-
-Workers block on the condition variable when idle — no busy-waiting, no spinning.
-
----
-
-### MoveOnlyTask
-
-`std::function` requires copyable callables, which rules out lambdas capturing `unique_ptr` or other move-only types. `MoveOnlyTask` solves this with a minimal type-erased wrapper:
-
-```
-MoveOnlyTask
-└── unique_ptr<Base>
-        └── Impl<F> : Base
-                └── F fn  (the actual callable, stored by move)
-                └── call() { fn(); }
-```
-
-This allows the task queue to store any callable — including those capturing move-only resources — without requiring copyability.
-
----
-
-### ActiveTaskGuard
-
-`ActiveTaskGuard` is a `[[nodiscard]]` RAII guard that automatically maintains the `activeTasks` counter:
+### Basic usage
 
 ```cpp
-// On construction:  activeTasks++
-// On destruction:   activeTasks--
-```
+#include <ThreadPoolPro/ThreadPool.h>
 
-It is created just before a task executes and destroyed when the task returns (or throws). This ensures `activeTaskCount()` is always accurate, even if a task throws an exception.
-
----
-
-### Pause & Resume
-
-`pause()` sets an atomic flag that causes workers to block on the condition variable even when tasks are queued. Tasks continue to accumulate in the queue but nothing is dispatched.
-
-`resume()` clears the flag and calls `condition.notify_all()`, waking all workers to resume draining the queue.
-
-```
-pause()  → paused = true   (workers stop dequeuing)
-resume() → paused = false  → notify_all() (workers wake and drain)
-```
-
----
-
-### Shutdown Modes
-
-```cpp
-enum class ShutdownMode {
-    FinishTasks,   // drain the queue before stopping workers
-    DiscardTasks   // stop workers immediately; pending tasks are dropped
-};
-```
-
-Both modes set `stopFlag` and call `condition.notify_all()`. The difference is in how workers respond when they wake up:
-
-| Mode           | Worker behavior on wake               |
-|----------------|---------------------------------------|
-| `FinishTasks`  | Keeps running until queue is empty    |
-| `DiscardTasks` | Returns immediately, drops the queue  |
-
-`shutdown()` is idempotent — calling it twice is safe. The destructor calls `shutdown(shutdownMode)` automatically, so explicit shutdown is optional.
-
----
-
-### Exception Handling
-
-The two submission methods handle exceptions differently by design:
-
-| Method      | Exception behavior                                              |
-|-------------|----------------------------------------------------------------|
-| `execute()` | Caught internally by the worker; `exceptionCounter` incremented |
-| `enqueue()` | Propagated through the `std::future`; caller retrieves via `f.get()` |
-
-This means `execute()` tasks never crash a worker thread. `enqueue()` tasks surface exceptions to the caller cleanly via the future mechanism.
-
----
-
-## Complexity
-
-| Operation          | Complexity | Notes                                          |
-|--------------------|------------|------------------------------------------------|
-| `execute()`        | O(1)       | Lock + queue push + notify                     |
-| `enqueue()`        | O(1)       | Lock + queue push + notify; future allocated   |
-| `pause()`          | O(1)       | Atomic store                                   |
-| `resume()`         | O(1)       | Atomic store + notify_all                      |
-| `shutdown()`       | O(n)       | Joins all worker threads                       |
-| `activeTaskCount()`| O(1)       | Atomic load                                    |
-| `queuedTasks()`    | O(1)       | Lock + queue size                              |
-| `threadCount()`    | O(1)       | Vector size (fixed at construction)            |
-| `exceptionCount()` | O(1)       | Atomic load                                    |
-| Task dispatch      | O(1)       | One worker woken per task via notify_one       |
-
----
-
-## Quick Example
-
-### Fire-and-Forget (`execute`)
-
-```cpp
-#include "ThreadPool.h"
-#include <atomic>
-#include <iostream>
+using namespace ThreadPoolPro;
 
 int main() {
-    ThreadPool pool(4);
+    ThreadPool pool{4};
 
-    std::atomic<int> counter{0};
+    auto future = pool.enqueue([](int a, int b) { return a + b; }, 2, 3);
+    int result = future.get(); // 5
 
-    for (int i = 0; i < 100; ++i) {
-        pool.execute([&counter] {
-            counter.fetch_add(1, std::memory_order_relaxed);
-        });
-    }
+    pool.detach([] {
+        // fire-and-forget, no future overhead
+    });
 
-    pool.shutdown(ThreadPool::ShutdownMode::FinishTasks);
-
-    std::cout << counter.load() << "\n"; // 100
+    pool.shutdown(); // drains remaining work by default
 }
 ```
 
----
-
-### Future Results (`enqueue`)
+### Pause / resume
 
 ```cpp
-ThreadPool pool(4);
+#include <ThreadPoolPro/ThreadPool.h>
 
-auto f1 = pool.enqueue([] { return 42; });
-auto f2 = pool.enqueue([] { return 10 * 10; });
+using namespace ThreadPoolPro;
 
-std::cout << f1.get() << "\n"; // 42
-std::cout << f2.get() << "\n"; // 100
-```
+int main() {
+    ThreadPool pool{4};
 
----
-
-### Argument Forwarding
-
-```cpp
-ThreadPool pool(4);
-
-auto f = pool.enqueue([](int a, int b) { return a + b; }, 21, 12);
-
-std::cout << f.get() << "\n"; // 33
-```
-
----
-
-### Move-Only Callables
-
-```cpp
-ThreadPool pool(2);
-
-auto resource = std::make_unique<int>(99);
-std::atomic<int> result{0};
-
-pool.execute([p = std::move(resource), &result] {
-    result.store(*p, std::memory_order_relaxed);
-});
-
-pool.shutdown(ThreadPool::ShutdownMode::FinishTasks);
-// result == 99
-```
-
----
-
-### Pause & Resume
-
-```cpp
-ThreadPool pool(4);
-
-pool.pause();
-
-for (int i = 0; i < 10; ++i)
-    pool.execute([] { /* queued, not running */ });
-
-// tasks are sitting in the queue — counter still 0
-
-pool.resume();
-pool.shutdown(ThreadPool::ShutdownMode::FinishTasks);
-// all 10 tasks completed
-```
-
----
-
-### Shutdown Modes
-
-```cpp
-// FinishTasks — waits for all queued tasks to complete
-pool.shutdown(ThreadPool::ShutdownMode::FinishTasks);
-
-// DiscardTasks — drops pending tasks immediately, stops workers ASAP
-pool.shutdown(ThreadPool::ShutdownMode::DiscardTasks);
-```
-
----
-
-### Exception Handling
-
-```cpp
-ThreadPool pool(4);
-
-// execute() — exception caught internally, counted
-pool.execute([] {
-    throw std::runtime_error("something went wrong");
-});
-
-// enqueue() — exception forwarded through the future
-auto f = pool.enqueue([] -> int {
-    throw std::runtime_error("future error");
-    return 0;
-});
-
-pool.shutdown(ThreadPool::ShutdownMode::FinishTasks);
-
-std::cout << pool.exceptionCount() << "\n"; // 1 (from execute)
-
-try {
-    f.get();
-} catch (const std::runtime_error& e) {
-    std::cout << e.what() << "\n"; // "future error"
+    pool.pause();               // stop picking up new work
+    pool.detach([] { /* ... */ }); // queues, doesn't run yet
+    pool.resume();               // let it proceed
 }
 ```
 
----
-
-### Pool Statistics
+### Shutdown modes
 
 ```cpp
-ThreadPool pool(4);
+#include <ThreadPoolPro/ThreadPool.h>
 
-std::cout << pool.threadCount()      << "\n"; // 4
-std::cout << pool.activeTaskCount()  << "\n"; // tasks currently running
-std::cout << pool.queuedTasks()      << "\n"; // tasks waiting in queue
-std::cout << pool.exceptionCount()   << "\n"; // execute() exceptions caught
+using namespace ThreadPoolPro;
 
-std::cout << std::boolalpha;
-std::cout << pool.isPaused()  << "\n"; // false
-std::cout << pool.isStopped() << "\n"; // false
+int main() {
+    ThreadPool pool{2};
+
+    for (int i = 0; i < 100; ++i)
+        pool.detach([] { /* ... */ });
+
+    pool.shutdown(ThreadPool::ShutdownMode::DiscardTasks); // abandons what's still queued
+}
+```
+
+### Recursive submission
+
+```cpp
+#include <ThreadPoolPro/ThreadPool.h>
+
+using namespace ThreadPoolPro;
+
+int main() {
+    ThreadPool pool{4};
+
+    auto future = pool.enqueue([&pool] {
+        pool.detach([] { /* subtask, stealable by idle workers */ });
+        return 1;
+    });
+
+    future.get();
+}
 ```
 
 ---
 
 ## Core API
 
-### Constructor & Destructor
+### Constructors & destructor
 
 ```cpp
-explicit ThreadPool(std::size_t threadCount);
-~ThreadPool(); // calls shutdown(shutdownMode) automatically
+explicit ThreadPool(std::size_t threadCount = std::thread::hardware_concurrency());
+~ThreadPool();
 ```
 
-ThreadPool is non-copyable and non-movable:
+### Execution control
 
 ```cpp
-ThreadPool(const ThreadPool&)            = delete;
-ThreadPool& operator=(const ThreadPool&) = delete;
-ThreadPool(ThreadPool&&)                 = delete;
-ThreadPool& operator=(ThreadPool&&)      = delete;
+void pause() noexcept;
+void resume() noexcept;
+void shutdown(ShutdownMode mode = ShutdownMode::FinishTasks) noexcept;
 ```
 
----
-
-### Task Submission
+### Task submission
 
 ```cpp
-// Fire-and-forget. Accepts move-only callables.
-// Throws std::runtime_error if pool is stopped.
-template<typename F>
-void execute(F&& task);
-
-// Returns std::future<T>. Forwards arguments to the task.
-// Throws std::runtime_error if pool is stopped.
 template<typename F, typename... Args>
 [[nodiscard]] auto enqueue(F&& task, Args&&... args)
     -> std::future<std::invoke_result_t<std::decay_t<F>, std::decay_t<Args>...>>;
+
+template<typename F>
+void detach(F&& task);
 ```
 
----
-
-### Control
+### Runtime statistics
 
 ```cpp
-void pause()  noexcept;  // suspend task dispatch (tasks still queue)
-void resume() noexcept;  // resume dispatch, wake all workers
-
-void shutdown(ShutdownMode mode = ShutdownMode::FinishTasks) noexcept;
-// FinishTasks  — drain queue then stop
-// DiscardTasks — stop immediately, drop pending tasks
-// Safe to call multiple times (idempotent)
+[[nodiscard]] std::size_t activeTaskCount() const noexcept;
+[[nodiscard]] std::size_t queuedTasks()     const noexcept;
+[[nodiscard]] std::size_t threadCount()     const noexcept;
+[[nodiscard]] std::size_t exceptionCount()  const noexcept;
+[[nodiscard]] std::size_t idleThreadCount() const noexcept;
+[[nodiscard]] bool        empty()           const noexcept;
 ```
 
----
-
-### Introspection
+### State queries
 
 ```cpp
-[[nodiscard]] std::size_t activeTaskCount()  const noexcept; // tasks currently executing
-[[nodiscard]] std::size_t queuedTasks()      const noexcept; // tasks waiting in queue
-[[nodiscard]] std::size_t threadCount()      const noexcept; // fixed worker count
-[[nodiscard]] std::size_t exceptionCount()   const noexcept; // execute() exceptions caught
-
 [[nodiscard]] bool isPaused()  const noexcept;
 [[nodiscard]] bool isStopped() const noexcept;
 ```
 
 ---
 
-## Benchmark Results
+## Design Overview
 
-Benchmarks compare Pulse Thread Pool against `std::async` and raw `std::thread`. All times in microseconds (µs).
+`ThreadPool` owns a fixed set of `Worker`s, each pairing a `Detail::WorkStealingQueue` with its own `std::thread`, plus a single mutex-guarded injection queue for external submission.
 
-> **Note:** Task counts differ between ThreadPool and the alternatives — spawning 100,000 raw threads is not feasible, so the pool handles significantly more tasks than `std::async`/`std::thread` in the same benchmark. This reflects the fundamental advantage of thread reuse. Compiled without `-O2`.
+### Internal layout
 
----
+```
+ThreadPool
+ ├── workers_[0] : { WorkStealingQueue, std::thread }
+ ├── workers_[1] : { WorkStealingQueue, std::thread }
+ ├── ...
+ ├── injectionQueue_  (mutex-guarded, external submission only)
+ ├── stopRequested_ / paused_ / activeTasks_ / pendingTasks_ / idleWorkers_ / exceptionCounter_
+ │     (each alignas(CacheLineSize) — no false sharing between them)
+ └── currentWorker_ / currentWorkerIndex_  (thread_local, set inside workerLoop)
+```
 
-### Task Throughput
+- **`Detail::Task`** — a move-only, type-erased callable wrapper. Callables ≤ 48 bytes are placed in inline storage (`inlineStorage_`); larger ones are heap-allocated. Dispatch goes through a `Detail::VTable` of three function pointers (`invoke_`, `moveTo_`, `destroy_`) instead of a virtual base class.
+- **`Detail::WorkStealingQueue`** — a Chase-Lev deque. The owning worker pushes/pops from the bottom without any lock; other workers steal from the top. Growth allocates a new `Buffer`, and the *old* buffer is retained in `retiredBuffers_` rather than freed immediately, since a thief may still be mid-read against it.
+- **`submit()`** (internal) — if called from inside a worker (`currentWorker_ != nullptr`), pushes directly onto that worker's own queue (lock-free). If called from any other thread, it goes through the mutex-guarded `injectionQueue_` instead.
+- **`workerLoop()`** — each worker tries its own queue, then steals from the others, then checks the injection queue, in that order, before parking on a condition variable if nothing is available.
 
-100,000 tasks (ThreadPool) vs 1,000 tasks (`std::async` / `std::thread`)
+### The one contended case in the deque
 
-| Method       | Time (µs)  | Notes                             |
-|--------------|----------:|-----------------------------------|
-| ThreadPool   | 308,151   | 100× more tasks                   |
-| std::async   | 173,577   | 1,000 tasks                       |
-| std::thread  | 199,691   | 1,000 tasks                       |
+For most of the deque's operations there's no contention to worry about: a thief only ever touches the *top* index, and the owner only ever touches the *bottom* index, and those two never overlap except in one specific case — when exactly one element remains (`top == bottom`). Both `popBottom()` and `steal()` handle that case by attempting a CAS on the shared top index **before** touching the slot's data, so only the thread that wins the CAS ever reads or moves the `Task` stored there. Reading the data before resolving that CAS — the more obvious-looking implementation — is safe for trivial, pointer-sized payloads (the classic Chase-Lev use case) but is a genuine data race for a non-trivial, move-only type like `Task`, since its move constructor mutates the source object.
 
-ThreadPool processes **100× more tasks** in ~1.5× the time of `std::async` — meaning per-task cost is roughly **66× lower**.
+### Exception handling model
 
----
+- **`enqueue()`** wraps the callable in a `std::packaged_task`; any exception it throws is captured into the associated future and surfaces at `future.get()`. It is **not** counted by `exceptionCount()`.
+- **`detach()`** runs the callable directly inside the worker's `try`/`catch`; any exception increments `exceptionCounter_` and is otherwise silently discarded. There is no way to recover the exception itself through this path.
 
-### Future Latency
-
-1,000 sequential `enqueue()` + `future.get()` round-trips
-
-| Method       | Time (µs)  | vs ThreadPool  |
-|--------------|----------:|----------------|
-| ThreadPool   | 117,785   | baseline        |
-| std::async   | 383,744   | **3.3× slower** |
-| std::thread  | 428,934   | **3.6× slower** |
-
-ThreadPool's pre-spawned workers eliminate thread creation overhead entirely. `std::async` and `std::thread` pay that cost on every round-trip.
-
----
-
-### Mixed Workload
-
-Short (10 iters), medium (1,000 iters), and long (10,000 iters) tasks — 10,000 tasks (ThreadPool) vs 1,000 (`std::async` / `std::thread`)
-
-| Method       | Time (µs)  | Notes                              |
-|--------------|----------:|------------------------------------|
-| ThreadPool   | 29,597    | 10,000 tasks                       |
-| std::async   | 203,886   | 1,000 tasks — **6.9× slower**      |
-| std::thread  | 201,187   | 1,000 tasks — **6.8× slower**      |
-
-ThreadPool handles **10× more tasks** in ~15% of the time. Per-task, it's roughly **69× more efficient** on mixed workloads.
+This asymmetry is intentional but easy to forget — see [Known Limitations](#known-limitations).
 
 ---
 
-### Contention
+## Complexity
 
-4 producers hammering the queue simultaneously — 100,000 tasks (ThreadPool) vs 4,000 (`std::async` / `std::thread`)
-
-| Method       | Time (µs)   | Notes                               |
-|--------------|------------:|-------------------------------------|
-| ThreadPool   | 201,776     | 100,000 tasks, 4 producers          |
-| std::async   | 673,805     | 4,000 tasks — **3.3× slower**       |
-| std::thread  | 2,601,702   | 4,000 tasks — **12.9× slower**      |
-
-This is the most telling benchmark. Raw `std::thread` collapses under multi-producer contention — OS thread creation at scale is extremely expensive. ThreadPool's single shared queue with pre-spawned workers absorbs the pressure cleanly.
+| Operation | Complexity | Notes |
+|---|---|---|
+| `WorkStealingQueue::pushBottom` | O(1) amortized | Lock-free; may trigger a buffer growth |
+| `WorkStealingQueue::popBottom` | O(1) | Lock-free; CAS only in the single-element contended case |
+| `WorkStealingQueue::steal` | O(1) | Lock-free; always CAS-gated |
+| `enqueue()` / `detach()` (from a worker) | O(1) amortized | Direct `pushBottom` on the caller's own queue |
+| `enqueue()` / `detach()` (external thread) | O(1) + lock | Goes through the mutex-guarded injection queue |
+| `fetchTask()` | O(workerCount) worst case | Own queue → steal from each other worker → injection queue |
+| Introspection methods | O(1) | Single relaxed atomic load each |
+| `shutdown()` | O(pending tasks) for `FinishTasks`, O(1) signal + join for `DiscardTasks` | Join cost is proportional to remaining in-flight work only in `FinishTasks` mode |
 
 ---
 
-### Summary
+## Benchmarks
 
-| Benchmark        | ThreadPool tasks | Competitor tasks | Per-task advantage |
-|------------------|:----------------:|:----------------:|:------------------:|
-| Task Throughput  | 100,000          | 1,000            | ~66× per task      |
-| Future Latency   | 1,000            | 1,000            | ~3.3× per task     |
-| Mixed Workload   | 10,000           | 1,000            | ~69× per task      |
-| Contention       | 100,000          | 4,000            | ~65× per task      |
+All times are total elapsed time for the listed iteration count, measured on the development machine.
 
-> The thread pool model wins by eliminating thread creation and destruction on every task. The bigger the workload, the more this compounds — especially under contention where raw thread spawning serializes and degrades catastrophically.
+> Compiled with `-std=c++23`, `-O3`. Results may vary depending on hardware, scheduler noise, and compiler optimizations.
+
+<details>
+<summary>Show benchmark results</summary>
+
+#### Introspection
+
+```
+----------------------------------------------------------------------
+Introspection                           Time           Iteration
+----------------------------------------------------------------------
+ActiveTaskCount()                       2.16 ms         1000000
+
+QueuedTasks()                           2.76 ms         1000000
+
+IdleThreadCount()                       1.68 ms         1000000
+
+Empty()                                 2.16 ms         1000000
+
+IsPaused()                              2.77 ms         1000000
+
+IsStopped()                             2.27 ms         1000000
+
+ThreadCount()                           2.61 ms         1000000
+
+ExceptionCount()                        2.74 ms         1000000
+----------------------------------------------------------------------
+```
+
+#### Task
+
+```
+----------------------------------------------------------------------
+Task                                    Time           Iteration
+----------------------------------------------------------------------
+Task construct (SBO)                    10.83 ms        1000000
+
+Task construct (heap fallback)          233.64 ms       1000000
+
+Task move construct (SBO)               19.34 ms        1000000
+
+Task move construct (heap fallback)     146.45 ms       1000000
+
+Task invoke (SBO)                       7.90 ms         1000000
+
+Task invoke (heap fallback)             5.67 ms         1000000
+----------------------------------------------------------------------
+```
+
+#### Pool Construction
+
+```
+----------------------------------------------------------------------
+Pool Construction                       Time           Iteration
+----------------------------------------------------------------------
+ThreadPool construct (1 thread)         63.70 ms        200
+
+ThreadPool construct (4 threads)        172.16 ms       200
+
+ThreadPool construct (hardware Concurrency)306.80 ms       200
+
+ThreadPool default construct            336.54 ms       200
+----------------------------------------------------------------------
+```
+
+#### Dispatch Latency
+
+```
+----------------------------------------------------------------------
+Dispatch Latency                        Time           Iteration
+----------------------------------------------------------------------
+Dispatch Latency (idle pool)
+  Average: 52.69 us
+  Worst:   2.01 ms
+
+Dispatch Latency (behind a 20k-task backlog)
+  p50:   4.31 us
+  p99:   38.38 us
+  Worst: 41.54 us
+----------------------------------------------------------------------
+```
+
+#### Submission
+
+```
+----------------------------------------------------------------------
+Submission                              Time           Iteration
+----------------------------------------------------------------------
+Detach() small callable                 342.67 ms       100000
+
+Enqueue() small callable                607.08 ms       100000
+
+Enqueue() with arguments                551.13 ms       100000
+
+Detach() large callable (heap path)     616.22 ms       100000
+----------------------------------------------------------------------
+```
+
+#### Work Stealing
+
+```
+----------------------------------------------------------------------
+Work Stealing                           Time           Iteration
+----------------------------------------------------------------------
+WorkStealingQueue push+pop (uncontended)433.03 ms       1000000
+
+WorkStealingQueue steal (uncontended)   504.82 ms       1000000
+
+Balanced load (external submission)
+  Total: 671.17 ms
+
+Imbalanced load (single-worker origin, requires stealing)
+  Total: 509.12 ms
+----------------------------------------------------------------------
+```
+
+#### Contention
+
+```
+----------------------------------------------------------------------
+Contention                              Time           Iteration
+----------------------------------------------------------------------
+Submission throughput by producer count (50000 tasks/producer, 8 pool threads)
+  1 producer(s): 122284 tasks/sec
+  2 producer(s): 175825 tasks/sec
+  4 producer(s): 21417 tasks/sec
+  8 producer(s): 600357 tasks/sec
+
+enqueue() vs detach() under contention (8 producers, 20000 tasks/producer)
+  detach():  643262 tasks/sec
+  enqueue(): 353473 tasks/sec
+----------------------------------------------------------------------
+```
+
+#### Throughput
+
+```
+----------------------------------------------------------------------
+Throughput                              Time           Iteration
+----------------------------------------------------------------------
+Throughput by thread count (500000 no-op tasks)
+  1 thread(s): 1095007 tasks/sec
+  2 thread(s): 380622 tasks/sec
+  4 thread(s): 159919 tasks/sec
+  8 thread(s): 118785 tasks/sec
+
+Throughput by task granularity (8 threads)
+  No-op:       174284 tasks/sec
+  Light (100): 294153 tasks/sec
+  Heavy (10k): 108517 tasks/sec
+----------------------------------------------------------------------
+```
+
+#### Summary
+
+**Where the design pays off:**
+
+- SBO task construction (`10.83 ms` vs `233.64 ms` for the heap path, per 1,000,000 calls) — roughly a 21x gap, which is exactly the allocation cost the inline storage exists to avoid.
+- `detach()` is meaningfully cheaper than `enqueue()` for submission (`342.67 ms` vs `607.08 ms` per 100,000 calls) — the difference is the `packaged_task`/future machinery `enqueue()` carries and `detach()` doesn't.
+- Introspection methods are effectively free (~2–3 ns/call across the board), consistent with single relaxed atomic loads.
+- Dispatch latency behind a 20k-task backlog is very low (p50 `4.31 us`, p99 `38.38 us`) — a busy worker just pulls the next queued item with no wake-up cost.
+
+**Where the numbers are inconsistent — unresolved:**
+
+- Idle-pool dispatch latency (`52.69 us` average) is *higher* than the p99 under a 20k-task backlog (`38.38 us`). This direction makes sense (waking a parked thread costs more than a busy worker grabbing its next item), but the gap is worth re-measuring with more samples before treating either number as precise.
+- The imbalanced work-stealing case finishes faster than the balanced case (`509.12 ms` vs `671.17 ms`), which reads like "stealing beats balanced load" but isn't a fair comparison — the two scenarios submit through different paths (external mutex-guarded injection vs. internal lock-free `pushBottom`), so the gap more likely reflects submission-path cost than stealing effectiveness.
+- The 4-producer contention result (`21417 tasks/sec`) is roughly 8x worse than 2 producers and 28x worse than 8 — not a plausible scaling curve, and almost certainly a one-off measurement artifact rather than real behavior. Needs to be rerun several times before drawing any conclusion from it.
+- No-op throughput at 8 threads disagrees between two tables measuring nominally the same thing: `118785 tasks/sec` in the by-thread-count table vs. `174284 tasks/sec` in the by-granularity table. Neither should be cited as an exact figure until this is reconciled.
+- Throughput *dropping* as thread count increases for no-op tasks (`1095007` → `118785` tasks/sec from 1 to 8 threads) is real and expected, not a regression — with zero actual work per task, more threads only adds coordination overhead (wake/notify traffic, atomic cache-line bouncing) with nothing to parallelize against it.
+
+| Category | Takeaway |
+|---|---|
+| Task construction | SBO path ~21x cheaper than heap fallback |
+| Submission | `detach()` ~1.8x cheaper than `enqueue()` |
+| Introspection | Effectively free (~2–3 ns/call) |
+| Dispatch latency | Very low under load; idle-wake cost dominates the idle case |
+| Work-stealing throughput comparison | Confounded by differing submission paths — not a clean read on stealing itself |
+| 4-producer contention result | Outlier, not reproduced elsewhere — needs rerun |
+| No-op throughput at 8 threads | Two tables disagree — needs reconciliation |
+| No-op throughput vs. thread count | Expected: overhead-bound workload gets worse with more threads |
+
+**Use a large pool when:** work is I/O-bound or genuinely parallelizable — the granularity benchmark shows light real work (`294153 tasks/sec`) benefiting from more threads, unlike no-op tasks.
+
+**Keep the pool small, or batch tasks, when:** individual tasks are trivial — coordination overhead dominates at that granularity regardless of thread count.
+
+</details>
 
 ---
 
 ## Project Structure
 
 ```
-Pulse-Thread-Pool/
+PulseThreadPool/
 ├── include/
-│   ├── ThreadPool.h       # Class declaration, MoveOnlyTask, ActiveTaskGuard
-│   └── ThreadPool.tpp     # enqueue() and execute() template definitions
-│
-├── src/
-│   └── ThreadPool.cpp     # Constructor, destructor, worker loop, control methods
-│
-├── benchmarks/
-│   ├── benchmarks.cpp     # Throughput, latency, mixed, contention benchmarks
-│   └── utils/
-│       ├── Table.h        # Benchmark result table formatting
-│       └── Table.tpp
+│   └── ThreadPoolPro/
+│       ├── ThreadPool.h
+│       ├── ThreadPool.tpp
+│       └── Detail/
+│           ├── Utility.h
+│           ├── VTable.h
+│           ├── Task.h
+│           ├── Task.tpp
+│           ├── Buffer.h
+│           └── WorkStealingQueue.h
 │
 ├── tests/
-│   └── test.cpp           # 13 unit tests covering correctness and concurrency
+│   ├── component/
+│   └── behavior/
+│
+├── benchmarks/
+│   ├── access/
+│   ├── auxiliary/
+│   ├── construction/
+│   ├── core/
+│   └── scaling/
 │
 ├── examples/
-│   └── examples.cpp       # Usage examples for all major features
+│   ├── quickstart/
+│   ├── integration/
+│   ├── patterns/
+│   ├── advanced/
+│   └── pitfall/
 │
+├── cmake/
+│   └── ThreadPoolProConfig.cmake.in
+│
+├── .gitignore
+├── CMakeLists.txt
 ├── README.md
 └── LICENSE
 ```
 
 ---
 
-## Build Instructions
+## Building from Source
 
 ### Requirements
 
-- C++23-compatible compiler: GCC 13+, Clang 17+, or MSVC 19.38+
-- No external dependencies
+- GCC 13+ or Clang with C++23 support
+- CMake 3.20+
 
-### Compile & Run Tests
-
-```bash
-g++ -std=c++23 tests/test.cpp src/ThreadPool.cpp -Iinclude -o build/tests
-./build/tests
-```
-
-### Compile & Run Examples
+### Build
 
 ```bash
-g++ -std=c++23 examples/examples.cpp src/ThreadPool.cpp -Iinclude -o build/examples
-./build/examples
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake --build .
 ```
 
-### Compile & Run Benchmarks
+### Run tests
 
 ```bash
-g++ -std=c++23 benchmarks/benchmarks.cpp src/ThreadPool.cpp -Iinclude -Ibenchmarks/utils -o build/benchmarks
-./build/benchmarks
+./tests
 ```
 
-> Use `-O2` or `-O3` for production-representative benchmark results. On Linux, link with `-lpthread` if needed.
+### Run benchmarks
+
+```bash
+./benchmarks
+```
+
+### Run examples
+
+```bash
+./example_basic_usage
+./example_with_futures
+./example_fan_out_fan_in
+./example_pause_resume_control
+./example_dangling_capture
+```
 
 ---
 
-## Notes
+## Known Limitations
 
-- **Not production-ready.** This is an educational project — consider libraries like `BS::thread_pool` or Intel TBB for real workloads.
-- The task queue uses a single `std::mutex`. Under extreme producer contention, this can become a bottleneck — a lock-free queue would reduce this.
-- `pause()` does not drain in-flight tasks — it only stops new tasks from being dequeued. Tasks already executing on workers continue to run.
-- `execute()` exceptions are silently counted. If you need to know *which* task threw, use `enqueue()` instead and inspect the future.
-- Iterator invalidation does not apply, but **iterator analogue**: any `std::future` returned by `enqueue()` becomes inaccessible if you don't store it — the `[[nodiscard]]` attribute enforces this at compile time.
-- Thread count is fixed at construction. Dynamic resizing is not supported.
+- **`enqueue()` and `detach()` have different exception-visibility contracts.** An exception thrown inside `enqueue()`'s callable is captured by the `packaged_task` and surfaces at `future.get()` — it never touches `exceptionCount()`. An exception thrown inside `detach()`'s callable is caught by the worker loop, silently discarded, and only visible as an increment to `exceptionCount()`. There's currently no way to recover the actual exception from a `detach()`-submitted task.
+- **No backpressure by default.** `enqueue()`/`detach()` will accept work faster than the pool can drain it indefinitely; `queuedTasks()` and `idleThreadCount()` are exposed so callers can build their own throttling, but the pool doesn't do it for you.
+- **Blocking on a future from inside a task can deadlock on an undersized pool.** If a task calls `.get()` on a subtask's future and there's no idle worker free to run that subtask, the pool makes no progress. This is inherent to blocking inside a work-stealing scheduler, not specific to this implementation — size the pool with headroom for your actual nesting depth.
+- **Some benchmark numbers don't yet reproduce cleanly** — see the [Benchmarks summary](#benchmarks) for the specific outlier (4-producer contention) and the inconsistent no-op throughput figures across two tables. Treat those specific numbers as directional, not exact, until rerun.
+- **`WorkStealingQueue`'s old buffers are retained, not freed, on growth.** After a growth event, the previous (smaller) buffer is kept alive in `retiredBuffers_` rather than deleted immediately, since a concurrent thief may still be mid-read against it. This avoids a use-after-free but means buffer memory isn't reclaimed until the queue itself is destroyed — acceptable given growth is geometric and rare, but worth knowing if a worker's queue grows very large and then stays alive for a long time.
 
----
+### Fixed during development
 
-## Contributing
-
-Learning-focused PRs and improvements are welcome. Some areas worth exploring:
-
-- Lock-free task queue (reduce mutex contention under high producer load)
-- Dynamic thread count adjustment (`resize()`)
-- Task priorities (priority queue backend)
-- `wait()` method — block until the queue is empty without shutting down
-- CMake build system
-- CI pipeline (GitHub Actions)
+- The Chase-Lev deque's contended "last element" case (`top == bottom`) previously read and moved the `Task` out of the shared slot *before* resolving the ownership CAS, in both `popBottom()` and `steal()`. Since `Task`'s move constructor mutates its source, two threads racing for that slot could both move-construct from the same object concurrently — a genuine data race that surfaced as duplicated and dropped task executions under the concurrency stress tests. Both functions now resolve the CAS first and only the winner ever touches the slot's data.
+- `WorkStealingQueue::pushBottom()` previously retired the *new* (just-grown) buffer into `retiredBuffers_` while also storing its raw pointer in `buffer_`, and separately leaked the *old* buffer that should have been retired instead. The result was a double-free of the new buffer at queue destruction and a leak of every buffer replaced by a growth event. Retirement now correctly targets the old buffer.
+- `workerLoop()` previously always attempted to fetch and run another task before ever checking `stopRequested_`, meaning `ShutdownMode::DiscardTasks` behaved identically to `FinishTasks` — it drained the full queue instead of discarding it. The loop now checks for a discard-mode shutdown before each fetch attempt.
 
 ---
 
 ## License
 
-[MIT](LICENSE) — free to use, modify, and distribute for educational and personal purposes.
+Licensed under the [MIT License](LICENSE) — free to use, modify, and distribute for educational and personal purposes.

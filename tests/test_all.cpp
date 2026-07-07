@@ -27,7 +27,7 @@ int main(int argc, char* argv[]) {
         std::cout << "\nAvailable test suites:\n";
         for (const auto& suite : test_registry())
             std::cout << suite.id << ".  " 
-                      << suite.name << '\n';
+                      << prettify(suite.name) << '\n';
         std::cout << "\n";
         return 0;
     }

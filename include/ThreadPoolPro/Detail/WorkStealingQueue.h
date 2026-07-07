@@ -20,7 +20,7 @@ class WorkStealingQueue {
 public:
 
     // Constructors and destructor.
-    explicit WorkStealingQueue(std::size_t initialCapacity = 16384);
+    explicit WorkStealingQueue(std::size_t initialCapacity = 1024);
     ~WorkStealingQueue();
 
     WorkStealingQueue(const WorkStealingQueue&)            = delete;

@@ -16,6 +16,7 @@
 
 #include <cassert>
 #include <new>
+#include <stdexcept>
 
 namespace ThreadPoolPro::Detail {
 
@@ -85,10 +86,13 @@ namespace ThreadPoolPro::Detail {
     // ============================================================
 
     void Task::operator()() {
-        assert(vtable_ && "Attempted to invoke an empty Task.");
-
+        // An empty Task should never reach here in correct operation.
+        // Unlike assert(), this check isn't stripped in release builds:
+        // silently no-op-ing would make a lost/corrupted task invisible.
+        // Throwing lets it surface as a counted exception in the pool's
+        // worker loop instead of vanishing without a trace.
         if (!vtable_)
-            return;
+            throw std::logic_error("Task::operator(): attempted to invoke an empty Task");
 
         vtable_->invoke_(target());
     }
@@ -118,8 +122,7 @@ namespace ThreadPoolPro::Detail {
             return;
 
         if (isHeap_) {
-            vtable_->destroy_(heapPtr_);
-            ::operator delete(heapPtr_);
+            vtable_->heapDelete_(heapPtr_);
             heapPtr_ = nullptr;
         }
         else {

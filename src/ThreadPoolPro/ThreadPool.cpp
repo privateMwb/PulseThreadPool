@@ -87,9 +87,22 @@ namespace ThreadPoolPro {
 
         wakeAll();
 
-        for (auto& worker : workers_)
-            if (worker->thread_.joinable())
+        // A worker thread cannot join itself (it would deadlock, or
+        // std::terminate depending on implementation). If shutdown()
+        // was called from inside a running task, detach that one
+        // thread instead — it will exit its workerLoop and clean
+        // itself up once this call returns and the task finishes.
+        const std::thread::id callerId = std::this_thread::get_id();
+
+        for (auto& worker : workers_) {
+            if (!worker->thread_.joinable())
+                continue;
+
+            if (worker->thread_.get_id() == callerId)
+                worker->thread_.detach();
+            else
                 worker->thread_.join();
+        }
     }
 
 
@@ -163,6 +176,20 @@ namespace ThreadPoolPro {
             }
 
             if (auto task = fetchTask(index)) {
+
+                // pause() only takes effect at the top of the loop, so a
+                // pause request can land in the small window between that
+                // check and fetchTask() returning a task. Re-check here,
+                // right before committing to execute — if a pause slipped
+                // in, put the task back instead of running it, so pause()
+                // reliably blocks new task execution rather than only
+                // "usually" doing so.
+                if (paused_.load(std::memory_order_acquire) &&
+                    !stopRequested_.load(std::memory_order_acquire))
+                {
+                    currentWorker_->queue_.pushBottom(std::move(*task));
+                    continue;
+                }
 
                 pendingTasks_.fetch_sub(1, std::memory_order_relaxed);
                 activeTasks_.fetch_add(1, std::memory_order_relaxed);

@@ -39,7 +39,18 @@ WorkStealingQueue::WorkStealingQueue(std::size_t initialCapacity)
 }
 
 WorkStealingQueue::~WorkStealingQueue() {
-    delete buffer_.load(std::memory_order_relaxed);
+    Buffer* buffer = buffer_.load(std::memory_order_relaxed);
+
+    // Free any tasks still pending in the active buffer. Retired
+    // buffers only hold stale duplicate pointer values (see grow()),
+    // never the sole owner of a pointee, so they must not be freed here.
+    std::size_t top    = topIndex_.load(std::memory_order_relaxed);
+    std::size_t bottom = bottomIndex_.load(std::memory_order_relaxed);
+
+    for (std::size_t i = top; i < bottom; ++i)
+        delete buffer->at(i);
+
+    delete buffer;
 }
 
 
@@ -67,7 +78,7 @@ void WorkStealingQueue::pushBottom(Task&& task) {
         buffer = newBuffer;
     }
 
-    buffer->at(bottom) = std::move(task);
+    buffer->at(bottom) = new Task(std::move(task));
 
     std::atomic_thread_fence(std::memory_order_release);
 
@@ -108,7 +119,10 @@ std::optional<Task> WorkStealingQueue::popBottom() {
         bottomIndex_.store(bottom + 1, std::memory_order_relaxed);
     }
 
-    return std::optional<Task>{ std::move(buffer->at(bottom)) };
+    Task* ptr = buffer->at(bottom);
+    std::optional<Task> result{ std::move(*ptr) };
+    delete ptr;
+    return result;
 }
 
 std::optional<Task> WorkStealingQueue::steal() {
@@ -131,7 +145,10 @@ std::optional<Task> WorkStealingQueue::steal() {
         return std::nullopt;
       }
 
-    return std::optional<Task>{ std::move(buffer->at(top)) };
+    Task* ptr = buffer->at(top);
+    std::optional<Task> result{ std::move(*ptr) };
+    delete ptr;
+    return result;
 }
 
 

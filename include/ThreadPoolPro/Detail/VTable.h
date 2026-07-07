@@ -12,6 +12,10 @@ struct VTable {
     void (*invoke_)(void*);
     void (*moveTo_)(void*, void*) noexcept;
     void (*destroy_)(void*) noexcept;
+
+    // Destroys and frees a heap-allocated callable, using the
+    // allocation alignment it was originally created with.
+    void (*heapDelete_)(void*) noexcept;
 };
 
 // Returns the shared vtable for the specified callable type.
@@ -26,6 +30,14 @@ inline const VTable* getVTable() noexcept {
         },
         [](void* p) noexcept {
             static_cast<F*>(p)->~F();
+        },
+        [](void* p) noexcept {
+            static_cast<F*>(p)->~F();
+
+            if constexpr (alignof(F) > __STDCPP_DEFAULT_NEW_ALIGNMENT__)
+                ::operator delete(p, std::align_val_t(alignof(F)));
+            else
+                ::operator delete(p);
         }
     };
 

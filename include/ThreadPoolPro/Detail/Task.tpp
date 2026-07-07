@@ -30,8 +30,14 @@ Task::Task(F&& f) {
 		isHeap_ = false;
 		::new (static_cast<void*>(inlineStorage_)) Decayed(std::forward<F>(f));
 	} else {
-		isHeap_  = true;
-		heapPtr_ = new Decayed(std::forward<F>(f));
+		isHeap_ = true;
+
+		if constexpr (alignof(Decayed) > __STDCPP_DEFAULT_NEW_ALIGNMENT__)
+			heapPtr_ = ::operator new(sizeof(Decayed), std::align_val_t(alignof(Decayed)));
+		else
+			heapPtr_ = ::operator new(sizeof(Decayed));
+
+		::new (heapPtr_) Decayed(std::forward<F>(f));
 	}
 }
 
