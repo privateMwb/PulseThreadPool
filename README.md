@@ -445,30 +445,15 @@ PulseThreadPool/
 │       ├── ThreadPool.h
 │       ├── ThreadPool.tpp
 │       └── Detail/
-│           ├── Utility.h
-│           ├── VTable.h
-│           ├── Task.h
-│           ├── Task.tpp
-│           ├── Buffer.h
-│           └── WorkStealingQueue.h
+│
+├── src/
+│   └── ThreadPoolPro/
+│       ├── ThreadPool.cpp
+│       └── Detail/
 │
 ├── tests/
-│   ├── component/
-│   └── behavior/
-│
 ├── benchmarks/
-│   ├── access/
-│   ├── auxiliary/
-│   ├── construction/
-│   ├── core/
-│   └── scaling/
-│
 ├── examples/
-│   ├── quickstart/
-│   ├── integration/
-│   ├── patterns/
-│   ├── advanced/
-│   └── pitfall/
 │
 ├── cmake/
 │   └── ThreadPoolProConfig.cmake.in
@@ -481,11 +466,12 @@ PulseThreadPool/
 
 ---
 
+
 ## Building from Source
 
 ### Requirements
 
-- GCC 13+ or Clang with C++23 support
+- GCC 16+ or Clang with C++23 support
 - CMake 3.20+
 
 ### Build
@@ -499,23 +485,28 @@ cmake --build .
 ### Run tests
 
 ```bash
-./tests
+./tests                 # run all test suites
+./tests list            # list available suites
+./tests 1               # run by number
+./tests name            # run by name
 ```
 
 ### Run benchmarks
 
 ```bash
-./benchmarks
+./benchmarks            # run all benchmark suites
+./benchmarks list       # list available suites
+./benchmarks 1          # run by number
+./benchmarks name       # run by name
 ```
 
 ### Run examples
 
 ```bash
-./example_basic_usage
-./example_with_futures
-./example_fan_out_fan_in
-./example_pause_resume_control
-./example_dangling_capture
+./examples              # run all examples
+./examples list         # list available examples
+./examples 1            # run by number
+./examples name         # run by name
 ```
 
 ---
