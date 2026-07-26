@@ -32,7 +32,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y cmake clang
+          sudo apt install -y cmake clang libtbb-dev
 
       # Only benchmarks/ and tools/ (the regression tool) are needed
       # here — tests/examples aren't exercised by this workflow.
