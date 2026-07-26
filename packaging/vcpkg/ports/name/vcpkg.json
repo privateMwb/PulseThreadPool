@@ -1,0 +1,11 @@
+{
+  "name": "threadpoolpro",
+  "version": "1.0.0",
+  "description": "High-performance, header-only LRU cache with O(1) get/put/evict, backed by a pool-allocated intrusive list and hash table.",
+  "homepage": "https://github.com/privateMwb/LRUCache",
+  "license": "MIT",
+  "dependencies": [
+    "vcpkg-cmake",
+    "vcpkg-cmake-config"
+  ]
+}

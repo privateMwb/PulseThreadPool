@@ -1,17 +1,25 @@
 # ============================================================
 # CMakeLists.txt
-# Build configuration for the ThreadPoolPro library.
+# Build configuration for this library.
 # ============================================================
 #
 # Sections:
 #   1. C++ Configuration
-#   2. ThreadPoolPro Library
-#   3. Tests
-#   4. Benchmarks
-#   5. Examples
-#   6. Installation
-#   7. Packaging
+#   2. Library
+#   3. Subdirectories
+#   4. Installation
+#   5. Packaging
 #
+# Retargeting this skeleton at a new library: change only the name
+# passed to project() below, and rename the src/<name> and
+# include/<name> directories to match. Everything else in this file
+# derives from ${PROJECT_NAME} automatically.
+#
+# The Library section below auto-detects whether src/<name>/*.cpp
+# files exist. If none are found, it builds an INTERFACE (header-only)
+# target. If sources are found, it builds a STATIC library instead.
+# No manual edits needed when a project grows from header-only into
+# having compiled sources.
 # ============================================================
 
 cmake_minimum_required(VERSION 3.20)
@@ -22,148 +30,121 @@ project(
     LANGUAGES CXX
 )
 
-# ============================================================
-# Section 1 — C++ Configuration
-# ============================================================
+# ============================================================================
+# C++ Configuration
+# ============================================================================
 
 # Configure the C++ language standard.
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# ============================================================
-# Section 2 — ThreadPoolPro Library
-# ============================================================
+# Place all executables directly in the build directory, regardless of
+# which subdirectory defines them (e.g. build/tests, build/compare).
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
-# Collect all library source files.
+# ============================================================================
+# Library (auto: header-only INTERFACE if no .cpp files, STATIC otherwise)
+# ============================================================================
+
+# Collect any library source files under src/<project_name>/.
+# CONFIGURE_DEPENDS makes CMake re-run this glob on reconfigure, so
+# adding sources to a previously header-only project is picked up
+# automatically on the next cmake run — no manual editing required.
 file(GLOB_RECURSE LIB_SOURCES CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/${PROJECT_NAME}/*.cpp"
 )
 
-# Build the ThreadPoolPro library.
-add_library(
-    ThreadPoolPro
-    ${LIB_SOURCES}
-)
+if(LIB_SOURCES)
+    # Sources found: build a real compiled static library.
+    add_library(
+        ${PROJECT_NAME}
+        STATIC
+        ${LIB_SOURCES}
+    )
 
-# Expose the public include directory to consumers.
-target_include_directories(
-    ThreadPoolPro
-    PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
-)
+    target_include_directories(
+        ${PROJECT_NAME}
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:include>
+    )
 
-# Require C++23 for all targets that consume ThreadPoolPro.
-target_compile_features(
-    ThreadPoolPro
-    PUBLIC
-    cxx_std_23
-)
+    target_compile_features(
+        ${PROJECT_NAME}
+        PUBLIC
+            cxx_std_23
+    )
+else()
+    # No sources: header-only library, INTERFACE target.
+    add_library(
+        ${PROJECT_NAME}
+        INTERFACE
+    )
 
-# ============================================================
-# Section 3 — Tests
-# ============================================================
+    target_include_directories(
+        ${PROJECT_NAME}
+        INTERFACE
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:include>
+    )
 
-# Collect all test source files.
-file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp"
-)
+    target_compile_features(
+        ${PROJECT_NAME}
+        INTERFACE
+            cxx_std_23
+    )
+endif()
 
-# Build the test executable.
-add_executable(
-    tests
-    ${TEST_SOURCES}
-)
+# ============================================================================
+# Subdirectories
+# ============================================================================
 
-# Allow simple test includes.
-target_include_directories(
-    tests
-    PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/tests
-)
+# Consumers (e.g. vcpkg) should disable these — only the library itself
+# needs to be configured/installed for downstream projects. Defaults to
+# ON so local development and existing CI workflows are unaffected.
+# Kept as a fixed prefix rather than ${PROJECT_NAME}-derived: downstream
+# projects that reference these flags (e.g. -DBUILD_TESTS=OFF) expect a
+# stable name that doesn't change when this skeleton is retargeted.
+option(BUILD_TESTS "Build the test suite" ON)
+option(BUILD_BENCHMARKS "Build the benchmark suite" ON)
+option(BUILD_REGRESSION "Build the regression benchmark tools" ON)
+option(BUILD_EXAMPLES "Build the examples suite" ON)
 
-# Link ThreadPoolPro to the test executable.
-target_link_libraries(
-    tests
-    PRIVATE
-    ThreadPoolPro
-)
+enable_testing()
 
-# ============================================================
-# Section 4 — Benchmarks
-# ============================================================
+if(BUILD_TESTS)
+    add_subdirectory(tests tests_build)
+endif()
 
-# Collect all benchmark source files.
-file(GLOB_RECURSE BENCH_SOURCES CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/*.cpp"
-)
+if(BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks benchmarks_build)
+endif()
 
-# Build the benchmark executable.
-add_executable(
-    benchmarks
-    ${BENCH_SOURCES}
-)
+if(BUILD_REGRESSION)
+    add_subdirectory(regression regression_build)
+endif()
 
-# Allow simple benchmark includes.
-target_include_directories(
-    benchmarks
-    PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks
-)
+if(BUILD_EXAMPLES)
+    add_subdirectory(examples examples_build)
+endif()
 
-# Link ThreadPoolPro to the benchmark executable.
-target_link_libraries(
-    benchmarks
-    PRIVATE
-    ThreadPoolPro
-)
+# ============================================================================
+# Installation
+# ============================================================================
 
-# ============================================================
-# Section 5 — Examples
-# ============================================================
-
-# Collect all example source files.
-file(GLOB_RECURSE EXAMPLE_SOURCES CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/examples/*.cpp"
-)
-
-# Build the example executable.
-add_executable(
-    examples
-    ${EXAMPLE_SOURCES}
-)
-
-# Allow simple example includes.
-target_include_directories(
-    examples
-    PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/examples
-)
-
-# Link ThreadPoolPro to the example executable.
-target_link_libraries(
-    examples
-    PRIVATE
-    ThreadPoolPro
-)
-
-# ============================================================
-# Section 6 — Installation
-# ============================================================
-
-# Install the ThreadPoolPro target and export it for downstream projects.
+# Install the library target and export it for downstream projects.
 install(
-    TARGETS ThreadPoolPro
-    EXPORT ThreadPoolProTargets
+    TARGETS ${PROJECT_NAME}
+    EXPORT ${PROJECT_NAME}Targets
 )
 
 # Install the exported CMake targets.
 install(
-    EXPORT ThreadPoolProTargets
-    FILE ThreadPoolProTargets.cmake
-    NAMESPACE ThreadPoolPro::
-    DESTINATION lib/cmake/ThreadPoolPro
+    EXPORT ${PROJECT_NAME}Targets
+    FILE ${PROJECT_NAME}Targets.cmake
+    NAMESPACE ${PROJECT_NAME}::
+    DESTINATION lib/cmake/${PROJECT_NAME}
 )
 
 # Install the public header files.
@@ -172,22 +153,22 @@ install(
     DESTINATION include
 )
 
-# ============================================================
-# Section 7 — Packaging
-# ============================================================
+# ============================================================================
+# Packaging
+# ============================================================================
 
 include(CMakePackageConfigHelpers)
 
 # Generate the package configuration file.
 configure_package_config_file(
-    cmake/ThreadPoolProConfig.cmake.in
-    ${CMAKE_CURRENT_BINARY_DIR}/ThreadPoolProConfig.cmake
-    INSTALL_DESTINATION lib/cmake/ThreadPoolPro
+    cmake/${PROJECT_NAME}Config.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}Config.cmake
+    INSTALL_DESTINATION lib/cmake/${PROJECT_NAME}
 )
 
 # Generate the package version file.
 write_basic_package_version_file(
-    ${CMAKE_CURRENT_BINARY_DIR}/ThreadPoolProConfigVersion.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake
     VERSION ${PROJECT_VERSION}
     COMPATIBILITY SameMajorVersion
 )
@@ -195,7 +176,7 @@ write_basic_package_version_file(
 # Install the package configuration files.
 install(
     FILES
-        ${CMAKE_CURRENT_BINARY_DIR}/ThreadPoolProConfig.cmake
-        ${CMAKE_CURRENT_BINARY_DIR}/ThreadPoolProConfigVersion.cmake
-    DESTINATION lib/cmake/ThreadPoolPro
+        ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}Config.cmake
+        ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake
+    DESTINATION lib/cmake/${PROJECT_NAME}
 )
