@@ -434,8 +434,22 @@ std::optional<ThreadPool::Task> ThreadPool::fetchTask(std::size_t index) {
 
         for (std::size_t i = 0; i < workerCount_ - 1; ++i) {
             std::size_t victim = (index + offset + i) % workerCount_;
+            Detail::WorkStealingQueue& victimQueue = workers_[victim].queue_;
 
-            if (auto task = workers_[victim].queue_.steal())
+            // Cheap relaxed pre-check before paying for steal()'s full
+            // seq_cst fence + CAS. Mirrors the same fast-skip already
+            // used for injection shards below. This matters most for
+            // workloads where local queues are rarely populated (e.g.
+            // all work arrives via detach()/enqueue() from outside any
+            // worker, never from a task recursively submitting more
+            // work) — every idle worker would otherwise pay this
+            // fence workerCount_-1 times on every single failed fetch,
+            // which is exactly what made cost scale badly with worker
+            // count even though there was never anything to steal.
+            if (victimQueue.size() == 0)
+                continue;
+
+            if (auto task = victimQueue.steal())
                 return task;
         }
     }
@@ -473,8 +487,12 @@ std::optional<ThreadPool::Task> ThreadPool::fetchTaskExternal() {
 
         for (std::size_t i = 0; i < workerCount_; ++i) {
             std::size_t victim = (offset + i) % workerCount_;
+            Detail::WorkStealingQueue& victimQueue = workers_[victim].queue_;
 
-            if (auto task = workers_[victim].queue_.steal())
+            if (victimQueue.size() == 0)
+                continue;
+
+            if (auto task = victimQueue.steal())
                 return task;
         }
     }

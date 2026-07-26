@@ -51,12 +51,20 @@ class MarketThread {
   private:
     void loop();
 
-    std::thread thread_;
-    std::thread::id id_;
-
+    // Declaration order matters here, not just cosmetically: C++
+    // constructs members in declaration order regardless of
+    // initializer-list order, and `thread_`'s constructor starts the
+    // OS thread immediately — which begins running loop() and touching
+    // job_/hasWork_/exiting_ right away. Those must already be fully
+    // constructed by then, so thread_ has to be declared (and thus
+    // constructed) last. This was a genuine, real data race in the
+    // original member order (thread_ first): the new thread could
+    // observe hasWork_/exiting_ mid-construction.
     std::function<void()> job_;
     alignas(CacheLineSize) std::atomic<bool> hasWork_{false};
     std::atomic<bool> exiting_{false};
+    std::thread::id id_;
+    std::thread thread_;
 };
 
 /**
@@ -71,6 +79,8 @@ class MarketThread {
 class ThreadMarket {
   public:
     static ThreadMarket& instance();
+
+    ~ThreadMarket();
 
     /// @brief Returns `count` threads: idle ones first, then freshly
     /// spawned ones for whatever the idle pool couldn't cover. The

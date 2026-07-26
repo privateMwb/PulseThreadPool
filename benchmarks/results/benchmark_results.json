@@ -1,0 +1,23 @@
+[
+  {
+    "suite": "Enqueue",
+    "operation": "enqueue + result",
+    "total_ns": 27877924,
+    "iterations": 10000,
+    "ns_per_op": 2787.79
+  },
+  {
+    "suite": "Enqueue",
+    "operation": "enqueue + result",
+    "total_ns": 236563462,
+    "iterations": 100000,
+    "ns_per_op": 2365.63
+  },
+  {
+    "suite": "Enqueue",
+    "operation": "enqueue + result",
+    "total_ns": 2373677001,
+    "iterations": 1000000,
+    "ns_per_op": 2373.68
+  }
+]

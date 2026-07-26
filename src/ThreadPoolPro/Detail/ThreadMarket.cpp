@@ -79,6 +79,20 @@ ThreadMarket& ThreadMarket::instance() {
     return market;
 }
 
+ThreadMarket::~ThreadMarket() {
+    // Explicit, rather than relying on implicit reverse-declaration-
+    // order member destruction: allThreads_ must be torn down (which
+    // signals exiting_ and joins each MarketThread — see
+    // MarketThread::~MarketThread()) BEFORE idleThreads_ is touched.
+    // Otherwise a MarketThread still finishing its last job at process
+    // exit could call returnToIdle() (mutating idleThreads_) while
+    // idleThreads_ was concurrently being destroyed — a genuine race.
+    // By the time this line returns, every thread is guaranteed to
+    // have exited loop() and can no longer touch either vector.
+    allThreads_.clear();
+    idleThreads_.clear();
+}
+
 std::vector<MarketThread*> ThreadMarket::lease(std::size_t count) {
     std::vector<MarketThread*> out;
     out.reserve(count);
