@@ -152,21 +152,6 @@ class ThreadPool {
     /// actually waiting on it — see workerLoop()'s task-execution block.
     alignas(Detail::CacheLineSize) std::atomic<std::size_t> waitIdleWaiters_;
 
-    /// @brief Counts wakeOne() calls that have been issued but not yet
-    /// "claimed" by a worker leaving the idle wait — caps how many
-    /// futex-wake syscalls a burst of submit() calls pays for at the
-    /// number of workers actually idle, instead of one call per task.
-    /// @details A plain boolean gate here is wrong: notify_one() wakes
-    /// *a* thread, not a chosen one and not all of them, so "at most one
-    /// wake ever" can leave every idle worker but one permanently
-    /// parked during a multi-task batch — exactly the regression this
-    /// replaced. Counting against idleWorkers_ instead bounds the wake
-    /// count to what's actually needed: a burst larger than the idle
-    /// count still gets at most idleWorkers_ wakes (not one per task),
-    /// but a burst is never under-woken relative to how many workers
-    /// are actually available to receive it.
-    alignas(Detail::CacheLineSize) std::atomic<std::size_t> wakesInFlight_;
-
     // Thread-local worker state, used so a task running on a worker
     // thread can submit new work directly into that worker's own queue
     // (see submit()) instead of always going through the injection queue.
