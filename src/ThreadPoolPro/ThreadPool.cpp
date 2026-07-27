@@ -542,22 +542,17 @@ void ThreadPool::submit(Task&& task) {
         shard.size_.fetch_add(1, std::memory_order_relaxed);
     }
 
-    std::size_t previousPending = pendingTasks_.fetch_add(1, std::memory_order_release);
+    pendingTasks_.fetch_add(1, std::memory_order_release);
 
-    // Only the transition from "no pending work" to "some pending work"
-    // needs to wake anyone. A submission that arrives while pendingTasks_
-    // is already nonzero doesn't need its own wake call: every worker
-    // that's already running (or already woken and mid-fetchTask()) keeps
-    // looping on its own until it comes up empty before it would ever
-    // park again, so it picks up later arrivals without further
-    // prompting. Waking on every single submit() call — the previous
-    // behavior — turned a burst of N tasks into up to N real notify (and
-    // often real futex-wake) syscalls; this cuts that to at most one per
-    // burst. wakeAll() rather than wakeOne() here so that one burst
-    // actually recruits every idle worker at once (parallelizing the
-    // burst) instead of one syscall only ever waking a single worker.
-    if (previousPending == 0 && idleWorkers_.load(std::memory_order_acquire) != 0)
-        wakeAll();
+    // Only pay for a notify if a worker is actually idle right now.
+    // Safe to skip otherwise: any worker about to go idle re-checks
+    // pendingTasks_ directly (see waitUntil()'s double-check pattern)
+    // before it can actually block, so it can't miss a task that was
+    // already counted in pendingTasks_ by the time it checks — and if a
+    // worker is already blocked, it must have incremented idleWorkers_
+    // strictly before blocking, so this check will see it.
+    if (idleWorkers_.load(std::memory_order_acquire) != 0)
+        wakeOne();
 }
 
 

@@ -82,20 +82,16 @@ inline void cpuRelax() noexcept {
 /**
  * @brief Number of `cpuRelax()`-spin iterations `waitUntil()` tries
  * before falling back to `std::atomic::wait()` (an actual park/syscall).
- * @details 1000 iterations of `cpuRelax()` is roughly ~1us on modern
- * x86/ARM cores — shorter than a real futex wake round-trip
- * (low-single-digit microseconds even unloaded, more under load), so a
- * worker spinning for only that long still ends up parking, and paying
- * that wake cost, for exactly the bursty small-task pattern this phase
- * exists to absorb. 20000 iterations costs on the order of tens of
- * microseconds of spin in the worst case (a genuinely idle pool), which
- * is negligible next to the wake latency it avoids, and is enough for a
- * task submitted moments after a worker goes idle to be picked up
- * without ever touching the OS scheduler — matching how other
- * work-stealing runtimes (e.g. oneTBB) avoid parking workers between
- * small, closely-spaced tasks.
+ * @details Sized so the spin phase costs on the order of a few
+ * microseconds total — negligible next to the microsecond-to-millisecond
+ * wake latency a full park/unparked round trip costs on a loaded
+ * system. This is what lets a burst of single, near-instant tasks (the
+ * common `enqueue()`/`detach()` pattern) get picked up without ever
+ * touching the OS scheduler, matching how other work-stealing runtimes
+ * (e.g. oneTBB) avoid parking their workers between small, closely-spaced
+ * tasks.
  */
-inline constexpr int WaitSpinIterations = 20000;
+inline constexpr int WaitSpinIterations = 1000;
 
 /**
  * @brief Number of additional `std::this_thread::yield()` iterations
