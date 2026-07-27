@@ -110,38 +110,6 @@ inline constexpr int WaitSpinIterations = 1000;
  */
 inline constexpr int WaitYieldIterations = 0;
 
-/**
- * @brief Maximum number of other workers' queues a single `fetchTask()`
- * / `fetchTaskExternal()` call will check before giving up on stealing
- * and moving on to the injection shards.
- * @details Previously every failed fetch scanned all `workerCount_ - 1`
- * other queues unconditionally. That's fine at 4 workers but means the
- * per-fetch cost of an *empty* pool grows linearly with worker count —
- * and since every idle worker retries this scan on every wakeup, total
- * work to drain a fixed-size batch scaled closer to O(workerCount_^2)
- * than O(workerCount_), which is what made cost blow up at 8+ workers
- * even though there was nothing extra to actually steal. Capping the
- * attempt count bounds a single fetch to O(1) regardless of pool size;
- * a task that isn't found in this attempt is found on a subsequent
- * retry (with a fresh random offset) or by a different idle worker —
- * the same bounded-random-probing strategy real work-stealing runtimes
- * (e.g. Rayon, Go's scheduler) use instead of exhaustive victim scans.
- */
-inline constexpr std::size_t MaxStealAttempts = 4;
-
-/**
- * @brief Maximum number of injection shards a single fetch attempt will
- * check before giving up.
- * @details Same reasoning as `MaxStealAttempts`: `injectionShardCount_`
- * itself already scales with worker count (`workerCount_ * 2`, floor
- * 16), so an exhaustive per-fetch scan of every shard compounds the
- * same O(n^2)-ish cost growth. Bounding it here, combined with a
- * randomized starting shard per attempt (rather than a fixed rotation),
- * keeps a single fetch cheap while still reaching every shard over a
- * handful of retries.
- */
-inline constexpr std::size_t MaxShardScanAttempts = 8;
-
 } // namespace ThreadPoolPro::Detail
 
 /// @brief Short alias so this library can be used as `rain::ThreadPool`,

@@ -105,7 +105,6 @@ ThreadPool::ThreadPool(std::size_t threadCount)
     , pendingTasks_{0}
     , idleWorkers_{0}
     , waitIdleWaiters_{0}
-    , wakesInFlight_{0}
 {
     // Borrow already-running threads from the global market instead of
     // spawning new ones — see Detail/ThreadMarket.h. Only however many
@@ -414,22 +413,6 @@ void ThreadPool::workerLoop(std::size_t index) {
         });
 
         idleWorkers_.fetch_sub(1, std::memory_order_relaxed);
-
-        // This worker is leaving the idle-for-work wait — whether it
-        // actually parked and was woken, or noticed pendingTasks_ change
-        // during the spin/yield phase without ever parking. Either way,
-        // release one wake credit so submit() can issue a fresh wakeOne()
-        // for the next idle worker instead of assuming this one wake
-        // still covers however many are left — see wakesInFlight_'s doc
-        // comment in ThreadPool.h. Saturating: only decrement if there's
-        // actually a credit outstanding, since this worker may be
-        // leaving because it self-detected work during the spin phase
-        // rather than because a wakeOne() call was ever issued for it.
-        std::size_t inFlight = wakesInFlight_.load(std::memory_order_relaxed);
-
-        while (inFlight > 0 && !wakesInFlight_.compare_exchange_weak(
-                                    inFlight, inFlight - 1, std::memory_order_relaxed, std::memory_order_relaxed))
-            ; // inFlight refreshed by the failed CAS; retry with the new value.
     }
 }
 
@@ -446,24 +429,23 @@ std::optional<ThreadPool::Task> ThreadPool::fetchTask(std::size_t index) {
 
     if (workerCount_ > 1) {
         // Randomized starting offset so concurrently-idle workers don't
-        // all probe the same victim first — see nextStealOffset(). Only
-        // check up to MaxStealAttempts victims rather than every other
-        // worker: an exhaustive scan here is what made this call's cost
-        // grow with workerCount_ even when there was nothing to steal —
-        // see MaxStealAttempts's doc comment. A victim this attempt
-        // misses is covered by this worker's next retry (fresh random
-        // offset) or by another idle worker trying concurrently.
-        std::size_t victimCount = workerCount_ - 1;
-        std::size_t attempts = victimCount < Detail::MaxStealAttempts ? victimCount : Detail::MaxStealAttempts;
-        std::size_t offset = 1 + nextStealOffset(static_cast<std::uint32_t>(victimCount));
+        // all probe the same victim first — see nextStealOffset().
+        std::size_t offset = 1 + nextStealOffset(static_cast<std::uint32_t>(workerCount_ - 1));
 
-        for (std::size_t i = 0; i < attempts; ++i) {
+        for (std::size_t i = 0; i < workerCount_ - 1; ++i) {
             std::size_t victim = (index + offset + i) % workerCount_;
             Detail::WorkStealingQueue& victimQueue = workers_[victim].queue_;
 
             // Cheap relaxed pre-check before paying for steal()'s full
             // seq_cst fence + CAS. Mirrors the same fast-skip already
-            // used for injection shards below.
+            // used for injection shards below. This matters most for
+            // workloads where local queues are rarely populated (e.g.
+            // all work arrives via detach()/enqueue() from outside any
+            // worker, never from a task recursively submitting more
+            // work) — every idle worker would otherwise pay this
+            // fence workerCount_-1 times on every single failed fetch,
+            // which is exactly what made cost scale badly with worker
+            // count even though there was never anything to steal.
             if (victimQueue.size() == 0)
                 continue;
 
@@ -472,19 +454,14 @@ std::optional<ThreadPool::Task> ThreadPool::fetchTask(std::size_t index) {
         }
     }
 
-    // Scan up to MaxShardScanAttempts injection shards, starting at a
-    // randomized offset each call (rather than a full scan rotated only
-    // by worker index) — same reasoning as the steal loop above: an
-    // exhaustive scan of every shard compounds the O(n)-with-worker-
-    // count cost, since injectionShardCount_ itself grows with
-    // workerCount_. Skip locking any shard the lock-free size_ check
-    // already shows as empty.
-    std::size_t shardAttempts =
-        injectionShardCount_ < Detail::MaxShardScanAttempts ? injectionShardCount_ : Detail::MaxShardScanAttempts;
-    std::size_t shardOffset = nextStealOffset(static_cast<std::uint32_t>(injectionShardCount_));
-
-    for (std::size_t i = 0; i < shardAttempts; ++i) {
-        InjectionShard& shard = injectionShards_[(shardOffset + i) % injectionShardCount_];
+    // Scan the injection shards starting at a rotating offset (keyed off
+    // this worker's own index, so different workers don't all start at
+    // shard 0 together) and skip locking any shard the lock-free size_
+    // check already shows as empty — the common case when the injection
+    // queues are mostly drained, which is exactly when this scan runs
+    // most often.
+    for (std::size_t i = 0; i < injectionShardCount_; ++i) {
+        InjectionShard& shard = injectionShards_[(index + i) % injectionShardCount_];
 
         if (shard.size_.load(std::memory_order_acquire) == 0)
             continue;
@@ -505,17 +482,10 @@ std::optional<ThreadPool::Task> ThreadPool::fetchTask(std::size_t index) {
 
 
 std::optional<ThreadPool::Task> ThreadPool::fetchTaskExternal() {
-    // Same bounded/randomized-offset strategy as fetchTask() — see
-    // MaxStealAttempts's doc comment. This path is additionally called
-    // by every thread blocked in waitIdle(), so an exhaustive per-call
-    // scan here scales even worse: it compounds across both worker
-    // count and however many external threads are simultaneously
-    // helping drain the pool.
     if (workerCount_ > 0) {
-        std::size_t attempts = workerCount_ < Detail::MaxStealAttempts ? workerCount_ : Detail::MaxStealAttempts;
         std::size_t offset = nextStealOffset(static_cast<std::uint32_t>(workerCount_));
 
-        for (std::size_t i = 0; i < attempts; ++i) {
+        for (std::size_t i = 0; i < workerCount_; ++i) {
             std::size_t victim = (offset + i) % workerCount_;
             Detail::WorkStealingQueue& victimQueue = workers_[victim].queue_;
 
@@ -527,12 +497,8 @@ std::optional<ThreadPool::Task> ThreadPool::fetchTaskExternal() {
         }
     }
 
-    std::size_t shardAttempts =
-        injectionShardCount_ < Detail::MaxShardScanAttempts ? injectionShardCount_ : Detail::MaxShardScanAttempts;
-    std::size_t shardOffset = nextStealOffset(static_cast<std::uint32_t>(injectionShardCount_));
-
-    for (std::size_t i = 0; i < shardAttempts; ++i) {
-        InjectionShard& shard = injectionShards_[(shardOffset + i) % injectionShardCount_];
+    for (std::size_t i = 0; i < injectionShardCount_; ++i) {
+        InjectionShard& shard = injectionShards_[i];
 
         if (shard.size_.load(std::memory_order_acquire) == 0)
             continue;
@@ -585,45 +551,8 @@ void ThreadPool::submit(Task&& task) {
     // already counted in pendingTasks_ by the time it checks — and if a
     // worker is already blocked, it must have incremented idleWorkers_
     // strictly before blocking, so this check will see it.
-    //
-    // Beyond that, cap how many wakeOne() calls (each a real futex-wake
-    // syscall) a burst of submit() calls issues at the number of
-    // workers currently idle, via wakesInFlight_: this submit() only
-    // fires wakeOne() if fewer wake credits are outstanding than there
-    // are idle workers to receive them, and takes one credit when it
-    // does. A batch far larger than the idle count (e.g. 64 tasks, 4
-    // idle workers) now costs at most 4 wakes instead of 64 — this was
-    // measured as the dominant per-task cost once fetchTask()'s scan
-    // cost was bounded (see MaxStealAttempts) — while still mobilizing
-    // every idle worker instead of just one. A plain "wake at most once
-    // ever" gate is wrong here: notify_one() wakes *a* thread, not a
-    // chosen one and not all of them, so that would leave every idle
-    // worker but one permanently parked during a multi-task batch.
-    // Even so, this can never cause a missed wakeup: even if a
-    // particular wakeOne()'s notify_one() reaches nobody (its target
-    // already left the idle wait via the spin/yield phase, unrelated to
-    // this notify), the same double-check pattern guarantees every idle
-    // worker notices pendingTasks_ becoming nonzero on its own — the
-    // notify only shortens how long that takes, it's never the only way
-    // progress happens.
-    std::size_t idle = idleWorkers_.load(std::memory_order_acquire);
-
-    if (idle != 0) {
-        std::size_t inFlight = wakesInFlight_.load(std::memory_order_acquire);
-
-        while (inFlight < idle) {
-            if (wakesInFlight_.compare_exchange_weak(inFlight, inFlight + 1, std::memory_order_acq_rel,
-                                                      std::memory_order_acquire)) {
-                wakeOne();
-                break;
-            }
-            // inFlight refreshed by the failed CAS; loop re-checks
-            // against the (possibly now-stale) idle snapshot above —
-            // worst case this over- or under-fires by a small amount
-            // under heavy concurrent submission, which only affects how
-            // many syscalls are spent, never correctness.
-        }
-    }
+    if (idleWorkers_.load(std::memory_order_acquire) != 0)
+        wakeOne();
 }
 
 
