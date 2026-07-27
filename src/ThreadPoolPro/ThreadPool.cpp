@@ -97,7 +97,6 @@ ThreadPool::ThreadPool(std::size_t threadCount)
     , injectionShardCount_{workerCount_ * 2 < 16 ? std::size_t{16} : workerCount_ * 2}
     , injectionShards_(injectionShardCount_)
     , injectionRoundRobin_{0}
-    , injectedCount_{0}
     , wakeToken_{0}
     , runState_{RunState::Running}
     , paused_{false}
@@ -428,18 +427,6 @@ std::optional<ThreadPool::Task> ThreadPool::fetchTask(std::size_t index) {
     if (auto task = self.queue_.popBottom())
         return task;
 
-    // Cheap hint check: when injectedCount_ is nonzero, work is known to
-    // be waiting in the shards right now, so go grab it directly instead
-    // of first paying for a steal-scan across every other worker that,
-    // in the common case where all submissions come from outside any
-    // worker (detach()/enqueue() from a producer thread), always misses.
-    // This is exactly the scan that made cost scale with workerCount_
-    // even though there was never anything to steal.
-    if (injectedCount_.load(std::memory_order_acquire) != 0) {
-        if (auto task = scanInjectionShards(index % injectionShardCount_))
-            return task;
-    }
-
     if (workerCount_ > 1) {
         // Randomized starting offset so concurrently-idle workers don't
         // all probe the same victim first — see nextStealOffset().
@@ -451,7 +438,14 @@ std::optional<ThreadPool::Task> ThreadPool::fetchTask(std::size_t index) {
 
             // Cheap relaxed pre-check before paying for steal()'s full
             // seq_cst fence + CAS. Mirrors the same fast-skip already
-            // used for injection shards below.
+            // used for injection shards below. This matters most for
+            // workloads where local queues are rarely populated (e.g.
+            // all work arrives via detach()/enqueue() from outside any
+            // worker, never from a task recursively submitting more
+            // work) — every idle worker would otherwise pay this
+            // fence workerCount_-1 times on every single failed fetch,
+            // which is exactly what made cost scale badly with worker
+            // count even though there was never anything to steal.
             if (victimQueue.size() == 0)
                 continue;
 
@@ -460,22 +454,34 @@ std::optional<ThreadPool::Task> ThreadPool::fetchTask(std::size_t index) {
         }
     }
 
-    // injectedCount_ was 0 above, but may have changed since — one more
-    // check, cheaper than an unconditional scan of every shard, which is
-    // the common case once the injection queues are mostly drained.
-    if (injectedCount_.load(std::memory_order_acquire) != 0)
-        return scanInjectionShards(index % injectionShardCount_);
+    // Scan the injection shards starting at a rotating offset (keyed off
+    // this worker's own index, so different workers don't all start at
+    // shard 0 together) and skip locking any shard the lock-free size_
+    // check already shows as empty — the common case when the injection
+    // queues are mostly drained, which is exactly when this scan runs
+    // most often.
+    for (std::size_t i = 0; i < injectionShardCount_; ++i) {
+        InjectionShard& shard = injectionShards_[(index + i) % injectionShardCount_];
+
+        if (shard.size_.load(std::memory_order_acquire) == 0)
+            continue;
+
+        std::lock_guard lock(shard.mutex_);
+
+        if (!shard.queue_.empty()) {
+            Task task(std::move(shard.queue_.front()));
+            shard.queue_.pop_front();
+            shard.size_.fetch_sub(1, std::memory_order_relaxed);
+
+            return task;
+        }
+    }
 
     return std::nullopt;
 }
 
 
 std::optional<ThreadPool::Task> ThreadPool::fetchTaskExternal() {
-    if (injectedCount_.load(std::memory_order_acquire) != 0) {
-        if (auto task = scanInjectionShards(0))
-            return task;
-    }
-
     if (workerCount_ > 0) {
         std::size_t offset = nextStealOffset(static_cast<std::uint32_t>(workerCount_));
 
@@ -491,19 +497,8 @@ std::optional<ThreadPool::Task> ThreadPool::fetchTaskExternal() {
         }
     }
 
-    if (injectedCount_.load(std::memory_order_acquire) != 0)
-        return scanInjectionShards(0);
-
-    return std::nullopt;
-}
-
-
-std::optional<ThreadPool::Task> ThreadPool::scanInjectionShards(std::size_t startIndex) {
-    // Skip locking any shard the lock-free size_ check already shows as
-    // empty — the common case when the injection queues are mostly
-    // drained, which is exactly when this scan runs most often.
     for (std::size_t i = 0; i < injectionShardCount_; ++i) {
-        InjectionShard& shard = injectionShards_[(startIndex + i) % injectionShardCount_];
+        InjectionShard& shard = injectionShards_[i];
 
         if (shard.size_.load(std::memory_order_acquire) == 0)
             continue;
@@ -514,7 +509,6 @@ std::optional<ThreadPool::Task> ThreadPool::scanInjectionShards(std::size_t star
             Task task(std::move(shard.queue_.front()));
             shard.queue_.pop_front();
             shard.size_.fetch_sub(1, std::memory_order_relaxed);
-            injectedCount_.fetch_sub(1, std::memory_order_relaxed);
 
             return task;
         }
@@ -546,20 +540,24 @@ void ThreadPool::submit(Task&& task) {
         std::lock_guard<std::mutex> lock(shard.mutex_);
         shard.queue_.push_back(std::move(task));
         shard.size_.fetch_add(1, std::memory_order_relaxed);
-        injectedCount_.fetch_add(1, std::memory_order_relaxed);
     }
 
-    pendingTasks_.fetch_add(1, std::memory_order_release);
+    std::size_t previousPending = pendingTasks_.fetch_add(1, std::memory_order_release);
 
-    // Only pay for a notify if a worker is actually idle right now.
-    // Safe to skip otherwise: any worker about to go idle re-checks
-    // pendingTasks_ directly (see waitUntil()'s double-check pattern)
-    // before it can actually block, so it can't miss a task that was
-    // already counted in pendingTasks_ by the time it checks — and if a
-    // worker is already blocked, it must have incremented idleWorkers_
-    // strictly before blocking, so this check will see it.
-    if (idleWorkers_.load(std::memory_order_acquire) != 0)
-        wakeOne();
+    // Only the transition from "no pending work" to "some pending work"
+    // needs to wake anyone. A submission that arrives while pendingTasks_
+    // is already nonzero doesn't need its own wake call: every worker
+    // that's already running (or already woken and mid-fetchTask()) keeps
+    // looping on its own until it comes up empty before it would ever
+    // park again, so it picks up later arrivals without further
+    // prompting. Waking on every single submit() call — the previous
+    // behavior — turned a burst of N tasks into up to N real notify (and
+    // often real futex-wake) syscalls; this cuts that to at most one per
+    // burst. wakeAll() rather than wakeOne() here so that one burst
+    // actually recruits every idle worker at once (parallelizing the
+    // burst) instead of one syscall only ever waking a single worker.
+    if (previousPending == 0 && idleWorkers_.load(std::memory_order_acquire) != 0)
+        wakeAll();
 }
 
 

@@ -1,0 +1,45 @@
+/data/data/com.termux/files/usr/bin/strace: Process 23654 attached
+/data/data/com.termux/files/usr/bin/strace: Process 23655 attached
+/data/data/com.termux/files/usr/bin/strace: Process 23656 attached
+/data/data/com.termux/files/usr/bin/strace: Process 23657 attached
+/data/data/com.termux/files/usr/bin/strace: Process 23662 attached
+/data/data/com.termux/files/usr/bin/strace: Process 23663 attached
+/data/data/com.termux/files/usr/bin/strace: Process 23664 attached
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- -------------------
+ 99.77  759.165580         287   2638736    991307 futex
+  0.22    1.660397          63     26017           sched_yield
+  0.00    0.008433          29       288           mmap
+  0.00    0.007796          41       187           mprotect
+  0.00    0.006335          74        85        21 openat
+  0.00    0.005827          38       153         1 munmap
+  0.00    0.004119          26       157           prctl
+  0.00    0.003433          39        86           read
+  0.00    0.003394         113        30           madvise
+  0.00    0.002148          43        49           rt_sigprocmask
+  0.00    0.002112          50        42           readlinkat
+  0.00    0.002007          27        72         8 newfstatat
+  0.00    0.001415         202         7           clone
+  0.00    0.001305          20        65           fstat
+  0.00    0.001132          17        64           close
+  0.00    0.000977          97        10           write
+  0.00    0.000889          63        14           sigaltstack
+  0.00    0.000834          28        29        25 faccessat
+  0.00    0.000656          21        30           gettid
+  0.00    0.000557         557         1         1 restart_syscall
+  0.00    0.000390          27        14           mremap
+  0.00    0.000335         111         3           set_tid_address
+  0.00    0.000207          17        12           rt_sigaction
+  0.00    0.000200          18        11           pread64
+  0.00    0.000152          15        10           fstatfs
+  0.00    0.000054          13         4           getrandom
+  0.00    0.000051          51         1           ioctl
+  0.00    0.000048          48         1           getrlimit
+  0.00    0.000013          13         1           sched_getaffinity
+  0.00    0.000000           0         1           sched_getscheduler
+  0.00    0.000000           0         1           getpid
+  0.00    0.000000           0         1           getuid
+  0.00    0.000000           0         1           execve
+  0.00    0.000000           0         3           fcntl
+------ ----------- ----------- --------- --------- -------------------
+100.00  760.880796         285   2666186    991363 total
