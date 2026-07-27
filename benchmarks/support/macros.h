@@ -76,17 +76,17 @@
     do {                                                                                           \
         nanoseconds cNs{}, sNs{};                                                                  \
                                                                                                    \
-        BENCHMARK(std::string(name), 1, c_expr, cNs, true);                                        \
-        BENCHMARK(std::string(name), 1, s_expr, sNs, false);                                       \
-        printComparisonRow(name, "1", cNs, sNs);                                                   \
+        BENCHMARK(std::string(name), 1000, c_expr, cNs, true);                                        \
+        BENCHMARK(std::string(name), 1000, s_expr, sNs, false);                                       \
+        printComparisonRow(name, "1k", cNs, sNs);                                                   \
                                                                                                    \
-        BENCHMARK(std::string(name), 10, c_expr, cNs, true);                                       \
-        BENCHMARK(std::string(name), 10, s_expr, sNs, false);                                      \
-        printComparisonRow(name, "10", cNs, sNs);                                                  \
+        BENCHMARK(std::string(name), 10000, c_expr, cNs, true);                                       \
+        BENCHMARK(std::string(name), 10000, s_expr, sNs, false);                                      \
+        printComparisonRow(name, "10k", cNs, sNs);                                                  \
                                                                                                    \
-        BENCHMARK(std::string(name), 100, c_expr, cNs, true);                                      \
-        BENCHMARK(std::string(name), 100, s_expr, sNs, false);                                     \
-        printComparisonRow(name, "100", cNs, sNs);                                                 \
+        BENCHMARK(std::string(name), 100000, c_expr, cNs, true);                                      \
+        BENCHMARK(std::string(name), 100000, s_expr, sNs, false);                                     \
+        printComparisonRow(name, "100k", cNs, sNs);                                                 \
     } while (0)
 
 // Registers this file's run_benchmarks with the global registry so it

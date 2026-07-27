@@ -2,22 +2,22 @@
   {
     "suite": "Enqueue",
     "operation": "enqueue + result",
-    "total_ns": 27877924,
+    "total_ns": 34146461,
     "iterations": 10000,
-    "ns_per_op": 2787.79
+    "ns_per_op": 3414.65
   },
   {
     "suite": "Enqueue",
     "operation": "enqueue + result",
-    "total_ns": 236563462,
+    "total_ns": 304712923,
     "iterations": 100000,
-    "ns_per_op": 2365.63
+    "ns_per_op": 3047.13
   },
   {
     "suite": "Enqueue",
     "operation": "enqueue + result",
-    "total_ns": 2373677001,
+    "total_ns": 3130870462,
     "iterations": 1000000,
-    "ns_per_op": 2373.68
+    "ns_per_op": 3130.87
   }
 ]

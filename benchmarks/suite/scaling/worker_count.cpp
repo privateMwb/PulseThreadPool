@@ -42,7 +42,7 @@ static void bench_at_worker_count(int workers) {
     };
 
     std::string label = "worker count " + std::to_string(workers);
-    BENCH(label.c_str(), ptp, otbb);
+    BENCH_CUSTOM(label.c_str(), ptp, otbb);
 }
 
 // Executes the worker-count sweep.
