@@ -1,44 +1,44 @@
 [
   {
-    "suite": "Steal",
-    "operation": "pushBottom + popBottom (uncontended)",
-    "total_ns": 819693,
+    "suite": "Detach",
+    "operation": "detach single task",
+    "total_ns": 4419000,
     "iterations": 10000,
-    "ns_per_op": 81.97
+    "ns_per_op": 441.90
   },
   {
-    "suite": "Steal",
-    "operation": "pushBottom + popBottom (uncontended)",
-    "total_ns": 8280615,
+    "suite": "Detach",
+    "operation": "detach single task",
+    "total_ns": 48180000,
     "iterations": 100000,
-    "ns_per_op": 82.81
+    "ns_per_op": 481.80
   },
   {
-    "suite": "Steal",
-    "operation": "pushBottom + popBottom (uncontended)",
-    "total_ns": 82486846,
+    "suite": "Detach",
+    "operation": "detach single task",
+    "total_ns": 440663692,
     "iterations": 1000000,
-    "ns_per_op": 82.49
+    "ns_per_op": 440.66
   },
   {
-    "suite": "Steal",
-    "operation": "pushBottom (contended by steal)",
-    "total_ns": 2420923,
+    "suite": "Detach",
+    "operation": "detach batch + drain (64 tasks)",
+    "total_ns": 651916385,
     "iterations": 10000,
-    "ns_per_op": 242.09
+    "ns_per_op": 65191.64
   },
   {
-    "suite": "Steal",
-    "operation": "pushBottom (contended by steal)",
-    "total_ns": 26184000,
+    "suite": "Detach",
+    "operation": "detach batch + drain (64 tasks)",
+    "total_ns": 6761216000,
     "iterations": 100000,
-    "ns_per_op": 261.84
+    "ns_per_op": 67612.16
   },
   {
-    "suite": "Steal",
-    "operation": "pushBottom (contended by steal)",
-    "total_ns": 268227770,
+    "suite": "Detach",
+    "operation": "detach batch + drain (64 tasks)",
+    "total_ns": 131489577777,
     "iterations": 1000000,
-    "ns_per_op": 268.23
+    "ns_per_op": 131489.58
   }
 ]

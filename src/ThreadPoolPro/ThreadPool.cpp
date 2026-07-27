@@ -429,23 +429,24 @@ std::optional<ThreadPool::Task> ThreadPool::fetchTask(std::size_t index) {
 
     if (workerCount_ > 1) {
         // Randomized starting offset so concurrently-idle workers don't
-        // all probe the same victim first — see nextStealOffset().
-        std::size_t offset = 1 + nextStealOffset(static_cast<std::uint32_t>(workerCount_ - 1));
+        // all probe the same victim first — see nextStealOffset(). Only
+        // check up to MaxStealAttempts victims rather than every other
+        // worker: an exhaustive scan here is what made this call's cost
+        // grow with workerCount_ even when there was nothing to steal —
+        // see MaxStealAttempts's doc comment. A victim this attempt
+        // misses is covered by this worker's next retry (fresh random
+        // offset) or by another idle worker trying concurrently.
+        std::size_t victimCount = workerCount_ - 1;
+        std::size_t attempts = victimCount < Detail::MaxStealAttempts ? victimCount : Detail::MaxStealAttempts;
+        std::size_t offset = 1 + nextStealOffset(static_cast<std::uint32_t>(victimCount));
 
-        for (std::size_t i = 0; i < workerCount_ - 1; ++i) {
+        for (std::size_t i = 0; i < attempts; ++i) {
             std::size_t victim = (index + offset + i) % workerCount_;
             Detail::WorkStealingQueue& victimQueue = workers_[victim].queue_;
 
             // Cheap relaxed pre-check before paying for steal()'s full
             // seq_cst fence + CAS. Mirrors the same fast-skip already
-            // used for injection shards below. This matters most for
-            // workloads where local queues are rarely populated (e.g.
-            // all work arrives via detach()/enqueue() from outside any
-            // worker, never from a task recursively submitting more
-            // work) — every idle worker would otherwise pay this
-            // fence workerCount_-1 times on every single failed fetch,
-            // which is exactly what made cost scale badly with worker
-            // count even though there was never anything to steal.
+            // used for injection shards below.
             if (victimQueue.size() == 0)
                 continue;
 
@@ -454,14 +455,19 @@ std::optional<ThreadPool::Task> ThreadPool::fetchTask(std::size_t index) {
         }
     }
 
-    // Scan the injection shards starting at a rotating offset (keyed off
-    // this worker's own index, so different workers don't all start at
-    // shard 0 together) and skip locking any shard the lock-free size_
-    // check already shows as empty — the common case when the injection
-    // queues are mostly drained, which is exactly when this scan runs
-    // most often.
-    for (std::size_t i = 0; i < injectionShardCount_; ++i) {
-        InjectionShard& shard = injectionShards_[(index + i) % injectionShardCount_];
+    // Scan up to MaxShardScanAttempts injection shards, starting at a
+    // randomized offset each call (rather than a full scan rotated only
+    // by worker index) — same reasoning as the steal loop above: an
+    // exhaustive scan of every shard compounds the O(n)-with-worker-
+    // count cost, since injectionShardCount_ itself grows with
+    // workerCount_. Skip locking any shard the lock-free size_ check
+    // already shows as empty.
+    std::size_t shardAttempts =
+        injectionShardCount_ < Detail::MaxShardScanAttempts ? injectionShardCount_ : Detail::MaxShardScanAttempts;
+    std::size_t shardOffset = nextStealOffset(static_cast<std::uint32_t>(injectionShardCount_));
+
+    for (std::size_t i = 0; i < shardAttempts; ++i) {
+        InjectionShard& shard = injectionShards_[(shardOffset + i) % injectionShardCount_];
 
         if (shard.size_.load(std::memory_order_acquire) == 0)
             continue;
@@ -482,10 +488,17 @@ std::optional<ThreadPool::Task> ThreadPool::fetchTask(std::size_t index) {
 
 
 std::optional<ThreadPool::Task> ThreadPool::fetchTaskExternal() {
+    // Same bounded/randomized-offset strategy as fetchTask() — see
+    // MaxStealAttempts's doc comment. This path is additionally called
+    // by every thread blocked in waitIdle(), so an exhaustive per-call
+    // scan here scales even worse: it compounds across both worker
+    // count and however many external threads are simultaneously
+    // helping drain the pool.
     if (workerCount_ > 0) {
+        std::size_t attempts = workerCount_ < Detail::MaxStealAttempts ? workerCount_ : Detail::MaxStealAttempts;
         std::size_t offset = nextStealOffset(static_cast<std::uint32_t>(workerCount_));
 
-        for (std::size_t i = 0; i < workerCount_; ++i) {
+        for (std::size_t i = 0; i < attempts; ++i) {
             std::size_t victim = (offset + i) % workerCount_;
             Detail::WorkStealingQueue& victimQueue = workers_[victim].queue_;
 
@@ -497,8 +510,12 @@ std::optional<ThreadPool::Task> ThreadPool::fetchTaskExternal() {
         }
     }
 
-    for (std::size_t i = 0; i < injectionShardCount_; ++i) {
-        InjectionShard& shard = injectionShards_[i];
+    std::size_t shardAttempts =
+        injectionShardCount_ < Detail::MaxShardScanAttempts ? injectionShardCount_ : Detail::MaxShardScanAttempts;
+    std::size_t shardOffset = nextStealOffset(static_cast<std::uint32_t>(injectionShardCount_));
+
+    for (std::size_t i = 0; i < shardAttempts; ++i) {
+        InjectionShard& shard = injectionShards_[(shardOffset + i) % injectionShardCount_];
 
         if (shard.size_.load(std::memory_order_acquire) == 0)
             continue;
