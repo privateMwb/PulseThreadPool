@@ -97,6 +97,7 @@ ThreadPool::ThreadPool(std::size_t threadCount)
     , injectionShardCount_{workerCount_ * 2 < 16 ? std::size_t{16} : workerCount_ * 2}
     , injectionShards_(injectionShardCount_)
     , injectionRoundRobin_{0}
+    , injectedCount_{0}
     , wakeToken_{0}
     , runState_{RunState::Running}
     , paused_{false}
@@ -427,6 +428,18 @@ std::optional<ThreadPool::Task> ThreadPool::fetchTask(std::size_t index) {
     if (auto task = self.queue_.popBottom())
         return task;
 
+    // Cheap hint check: when injectedCount_ is nonzero, work is known to
+    // be waiting in the shards right now, so go grab it directly instead
+    // of first paying for a steal-scan across every other worker that,
+    // in the common case where all submissions come from outside any
+    // worker (detach()/enqueue() from a producer thread), always misses.
+    // This is exactly the scan that made cost scale with workerCount_
+    // even though there was never anything to steal.
+    if (injectedCount_.load(std::memory_order_acquire) != 0) {
+        if (auto task = scanInjectionShards(index % injectionShardCount_))
+            return task;
+    }
+
     if (workerCount_ > 1) {
         // Randomized starting offset so concurrently-idle workers don't
         // all probe the same victim first — see nextStealOffset().
@@ -438,14 +451,7 @@ std::optional<ThreadPool::Task> ThreadPool::fetchTask(std::size_t index) {
 
             // Cheap relaxed pre-check before paying for steal()'s full
             // seq_cst fence + CAS. Mirrors the same fast-skip already
-            // used for injection shards below. This matters most for
-            // workloads where local queues are rarely populated (e.g.
-            // all work arrives via detach()/enqueue() from outside any
-            // worker, never from a task recursively submitting more
-            // work) — every idle worker would otherwise pay this
-            // fence workerCount_-1 times on every single failed fetch,
-            // which is exactly what made cost scale badly with worker
-            // count even though there was never anything to steal.
+            // used for injection shards below.
             if (victimQueue.size() == 0)
                 continue;
 
@@ -454,34 +460,22 @@ std::optional<ThreadPool::Task> ThreadPool::fetchTask(std::size_t index) {
         }
     }
 
-    // Scan the injection shards starting at a rotating offset (keyed off
-    // this worker's own index, so different workers don't all start at
-    // shard 0 together) and skip locking any shard the lock-free size_
-    // check already shows as empty — the common case when the injection
-    // queues are mostly drained, which is exactly when this scan runs
-    // most often.
-    for (std::size_t i = 0; i < injectionShardCount_; ++i) {
-        InjectionShard& shard = injectionShards_[(index + i) % injectionShardCount_];
-
-        if (shard.size_.load(std::memory_order_acquire) == 0)
-            continue;
-
-        std::lock_guard lock(shard.mutex_);
-
-        if (!shard.queue_.empty()) {
-            Task task(std::move(shard.queue_.front()));
-            shard.queue_.pop_front();
-            shard.size_.fetch_sub(1, std::memory_order_relaxed);
-
-            return task;
-        }
-    }
+    // injectedCount_ was 0 above, but may have changed since — one more
+    // check, cheaper than an unconditional scan of every shard, which is
+    // the common case once the injection queues are mostly drained.
+    if (injectedCount_.load(std::memory_order_acquire) != 0)
+        return scanInjectionShards(index % injectionShardCount_);
 
     return std::nullopt;
 }
 
 
 std::optional<ThreadPool::Task> ThreadPool::fetchTaskExternal() {
+    if (injectedCount_.load(std::memory_order_acquire) != 0) {
+        if (auto task = scanInjectionShards(0))
+            return task;
+    }
+
     if (workerCount_ > 0) {
         std::size_t offset = nextStealOffset(static_cast<std::uint32_t>(workerCount_));
 
@@ -497,8 +491,19 @@ std::optional<ThreadPool::Task> ThreadPool::fetchTaskExternal() {
         }
     }
 
+    if (injectedCount_.load(std::memory_order_acquire) != 0)
+        return scanInjectionShards(0);
+
+    return std::nullopt;
+}
+
+
+std::optional<ThreadPool::Task> ThreadPool::scanInjectionShards(std::size_t startIndex) {
+    // Skip locking any shard the lock-free size_ check already shows as
+    // empty — the common case when the injection queues are mostly
+    // drained, which is exactly when this scan runs most often.
     for (std::size_t i = 0; i < injectionShardCount_; ++i) {
-        InjectionShard& shard = injectionShards_[i];
+        InjectionShard& shard = injectionShards_[(startIndex + i) % injectionShardCount_];
 
         if (shard.size_.load(std::memory_order_acquire) == 0)
             continue;
@@ -509,6 +514,7 @@ std::optional<ThreadPool::Task> ThreadPool::fetchTaskExternal() {
             Task task(std::move(shard.queue_.front()));
             shard.queue_.pop_front();
             shard.size_.fetch_sub(1, std::memory_order_relaxed);
+            injectedCount_.fetch_sub(1, std::memory_order_relaxed);
 
             return task;
         }
@@ -540,6 +546,7 @@ void ThreadPool::submit(Task&& task) {
         std::lock_guard<std::mutex> lock(shard.mutex_);
         shard.queue_.push_back(std::move(task));
         shard.size_.fetch_add(1, std::memory_order_relaxed);
+        injectedCount_.fetch_add(1, std::memory_order_relaxed);
     }
 
     pendingTasks_.fetch_add(1, std::memory_order_release);

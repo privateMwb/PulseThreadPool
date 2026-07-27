@@ -133,6 +133,20 @@ class ThreadPool {
     std::vector<InjectionShard> injectionShards_;
     std::atomic<std::size_t> injectionRoundRobin_;
 
+    /// @brief Approximate total count of tasks currently sitting in
+    /// `injectionShards_`, summed across all shards. A cheap hint
+    /// checked by `fetchTask()`/`fetchTaskExternal()` before deciding
+    /// whether to pay for the steal-scan or the shard-scan at all: when
+    /// this is 0, skip scanning every shard (nothing there); when it's
+    /// nonzero, skip the steal-scan of other workers first and go
+    /// straight for the injection shards, since work is known to be
+    /// waiting there. Bumped in submit()'s injection path, decremented
+    /// wherever a task is actually popped from a shard. Like
+    /// InjectionShard::size_, this is for skipping work, not for
+    /// correctness — a stale read just means an extra (harmless) scan
+    /// or a task picked up one loop iteration later.
+    alignas(Detail::CacheLineSize) std::atomic<std::size_t> injectedCount_;
+
     /// @brief Generation counter used with `std::atomic::wait/notify` to
     /// wake idle workers without a condition_variable + mutex pair. Bumped
     /// (and workers notified) on every submit(), pause(), resume(), and
@@ -271,11 +285,14 @@ class ThreadPool {
     void workerLoop(std::size_t index);
 
     /**
-     * @brief Attempts to obtain one task to run, in priority order: this
-     * worker's own queue, then stealing from other workers (starting at
-     * a randomized offset to spread contention across thieves), then the
-     * sharded injection queues (checked at a rotating offset, and only
-     * locked if a lock-free size check shows the shard isn't empty).
+     * @brief Attempts to obtain one task to run: this worker's own queue
+     * first, then — guided by the `injectedCount_` hint — either the
+     * sharded injection queues (if a task is known to be waiting there)
+     * or stealing from other workers (starting at a randomized offset to
+     * spread contention across thieves), falling back to whichever of
+     * the two wasn't tried first. Shards are checked at a rotating
+     * offset and only locked if a lock-free size check shows the shard
+     * isn't empty.
      * @param index This worker's index into `workers_`.
      * @return A task if one was found, otherwise `std::nullopt`.
      */
@@ -293,6 +310,15 @@ class ThreadPool {
      * @return A task if one was found, otherwise `std::nullopt`.
      */
     [[nodiscard]] std::optional<Task> fetchTaskExternal();
+
+    /**
+     * @brief Scans the injection shards starting at shard `startIndex`,
+     * wrapping around, taking the first non-empty one found and
+     * decrementing `injectedCount_` on success.
+     * @param startIndex Shard index to start the scan at.
+     * @return A task if one was found, otherwise `std::nullopt`.
+     */
+    [[nodiscard]] std::optional<Task> scanInjectionShards(std::size_t startIndex);
 
     /**
      * @brief Routes a task into the pool: the calling worker's own queue
