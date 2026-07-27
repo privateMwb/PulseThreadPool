@@ -51,6 +51,15 @@
 // token instead of a condition_variable + mutex pair, so submit()'s hot
 // path never has to acquire a lock just to (usually redundantly) notify
 // a condition variable — see waitUntil() and wakeOne()/wakeAll().
+//
+// Workers are started lazily rather than all at once: only
+// EagerStartCount are assign()ed a job at construction, and the rest
+// are ramped up one at a time by submit() the first time it finds no
+// idle worker to hand a task to directly (see nextToStart_). A pool
+// that's constructed and destroyed with little or no real concurrency
+// demand — the common case for short-lived pools — therefore pays a
+// real OS thread wake/park round trip only for the workers it actually
+// used, not for every worker it was configured with.
 
 namespace ThreadPoolPro {
 
@@ -112,6 +121,35 @@ class ThreadPool {
     // declaration order, not the order written in the init list.
     std::size_t workerCount_;
     std::vector<Worker> workers_;
+
+    /// @brief Number of workers `assign()`ed a job at construction time,
+    /// regardless of load. Deliberately small — see `nextToStart_` — so
+    /// that a pool which is constructed and destroyed without ever
+    /// seeing meaningful concurrency demand doesn't pay a real OS
+    /// thread wake/park round trip for every worker it was configured
+    /// with, only for the ones actually used. This was the dominant
+    /// cost behind construct/destroy being far more expensive than a
+    /// pool that never runs a single task should be.
+    static constexpr std::size_t EagerStartCount = 1;
+
+    /// @brief Index of the next not-yet-started worker to lazily
+    /// activate, or `workerCount_` once every worker has been started.
+    /// Workers past `EagerStartCount` are only `assign()`ed a job the
+    /// first time `submit()` finds no currently-idle worker to hand a
+    /// task to directly — see `submit()`. `shutdown()` force-starts
+    /// every remaining reserve worker (via `nextToStart_.exchange()`)
+    /// so it can safely `waitDone()` on every worker it leased.
+    std::atomic<std::size_t> nextToStart_;
+
+    /// @brief Number of `submit()` calls currently between winning a
+    /// claim on a reserve worker index (via `nextToStart_`) and
+    /// finishing the corresponding `assign()` call. `shutdown()` spins
+    /// on this reaching zero before it may `waitDone()` on any worker —
+    /// otherwise it could observe a worker whose job hasn't actually
+    /// been `assign()`ed yet and misread that as "already finished"
+    /// (`waitDone()` returns immediately for a MarketThread that was
+    /// never given work at all). See `submit()` and `shutdown()`.
+    std::atomic<std::size_t> startsInFlight_;
 
     // Sharded injection queues, used only for submissions arriving from
     // threads that are not themselves pool workers. Sharded (rather than
@@ -246,6 +284,10 @@ class ThreadPool {
     /// @brief Returns the number of tasks that have thrown an uncaught exception.
     [[nodiscard]] std::size_t exceptionCount() const noexcept;
     /// @brief Returns the number of worker threads currently idle.
+    /// @details Counts only workers that have actually been started —
+    /// a reserve worker not yet ramped up (see the file-level comment
+    /// on lazy worker startup) isn't counted as idle, since it isn't
+    /// running at all yet.
     [[nodiscard]] std::size_t idleThreadCount() const noexcept;
     /// @brief Returns whether there are no queued (not-yet-started) tasks.
     [[nodiscard]] bool empty() const noexcept;

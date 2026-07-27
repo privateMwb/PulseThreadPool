@@ -82,16 +82,29 @@ inline void cpuRelax() noexcept {
 /**
  * @brief Number of `cpuRelax()`-spin iterations `waitUntil()` tries
  * before falling back to `std::atomic::wait()` (an actual park/syscall).
- * @details Sized so the spin phase costs on the order of a few
- * microseconds total — negligible next to the microsecond-to-millisecond
- * wake latency a full park/unparked round trip costs on a loaded
- * system. This is what lets a burst of single, near-instant tasks (the
- * common `enqueue()`/`detach()` pattern) get picked up without ever
- * touching the OS scheduler, matching how other work-stealing runtimes
- * (e.g. oneTBB) avoid parking their workers between small, closely-spaced
+ * @details Sized so the spin phase costs a fraction of a microsecond
+ * total — negligible next to the microsecond-to-millisecond wake
+ * latency a full park/unparked round trip costs on a loaded system.
+ * This is what lets a burst of single, near-instant tasks (the common
+ * `enqueue()`/`detach()` pattern) get picked up without ever touching
+ * the OS scheduler, matching how other work-stealing runtimes (e.g.
+ * oneTBB) avoid parking their workers between small, closely-spaced
  * tasks.
+ *
+ * Deliberately much smaller than a "spin for a few microseconds"
+ * budget alone would suggest: every iteration of this loop re-reads
+ * whichever shared atomics the caller's predicate depends on (e.g.
+ * `pendingTasks_`), and every *write* to one of those atomics (e.g.
+ * every `submit()`) invalidates the cached copy held by every idle
+ * worker currently spinning on it. That invalidation cost scales with
+ * the number of concurrently-idle workers, so a long spin window here
+ * turns "N workers are idle" into O(N) cache-coherency traffic per
+ * submitted task — this, not the spinning itself, was the dominant
+ * cost behind this pool's throughput collapsing as worker count grew.
+ * A short spin keeps the "catch near-instant work without parking"
+ * benefit while sharply bounding that window.
  */
-inline constexpr int WaitSpinIterations = 1000;
+inline constexpr int WaitSpinIterations = 200;
 
 /**
  * @brief Number of additional `std::this_thread::yield()` iterations

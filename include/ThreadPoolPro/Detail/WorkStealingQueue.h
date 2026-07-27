@@ -37,8 +37,19 @@ namespace ThreadPoolPro::Detail {
  * recycles those allocations through a private, non-atomic free list
  * (`freeHead_`) instead of calling `new`/`delete` on every operation —
  * safe precisely because that free list is never touched from any other
- * thread. `steal()` runs on other threads, so it always uses ordinary
- * `delete` and never touches the free list.
+ * thread.
+ *
+ * `steal()` runs on thief threads, so it can't touch `freeHead_`
+ * directly — but it doesn't fall back to a real `delete` either. Freed
+ * nodes are instead pushed onto `remoteFreeHead_`, a lock-free
+ * multi-producer/single-consumer stack: any number of thieves may push
+ * to it concurrently (one CAS each, no lock), and only the owner thread
+ * ever drains it (via `acquireNode()`), so the drain itself needs no
+ * synchronization beyond the single atomic exchange that claims the
+ * whole chain. Under steal-heavy contention this turns what would
+ * otherwise be a real free()/malloc() round trip per stolen task into a
+ * single uncontended-in-practice CAS — the dominant cost this design
+ * avoids.
  */
 class WorkStealingQueue {
   public:
@@ -125,6 +136,20 @@ class WorkStealingQueue {
      */
     void releaseNode(Task* node) noexcept;
 
+    /**
+     * @brief Atomically claims the entire chain currently on
+     * `remoteFreeHead_` (nodes freed by `steal()` on other threads) and
+     * merges it into the private `freeHead_` list, respecting
+     * `TaskFreeListCapacity` (excess nodes are freed immediately rather
+     * than retained unboundedly).
+     * @details Owner-thread-only to call, but safe to run concurrently
+     * with any number of thieves still pushing onto `remoteFreeHead_` —
+     * the single atomic exchange either claims a node a thief already
+     * finished pushing, or leaves it for the next drain; either way no
+     * node is ever seen by two threads at once.
+     */
+    void drainRemoteFreeList() noexcept;
+
     // Queue indices. Cache-line-separated because they're written by
     // different, potentially concurrently-running threads (owner vs.
     // thieves) and false sharing between them would serialize otherwise
@@ -142,12 +167,21 @@ class WorkStealingQueue {
 
     /// @brief Head of the owner-thread-only recycled-node free list.
     /// `nullptr` when empty. Never touched outside `acquireNode()`,
-    /// `releaseNode()`, and the destructor.
+    /// `releaseNode()`, `drainRemoteFreeList()`, and the destructor.
     FreeNode* freeHead_ = nullptr;
 
     /// @brief Current number of nodes on `freeHead_`'s list, kept so
-    /// `releaseNode()` can enforce `TaskFreeListCapacity` in O(1).
+    /// `releaseNode()`/`drainRemoteFreeList()` can enforce
+    /// `TaskFreeListCapacity` in O(1).
     std::size_t freeCount_ = 0;
+
+    /// @brief Lock-free MPSC stack of nodes freed by `steal()` on other
+    /// threads, awaiting a drain into `freeHead_` by the owner — see the
+    /// class-level comment. Cache-line separated: unlike `freeHead_`,
+    /// this is written concurrently by every thief, so it would
+    /// otherwise false-share with (and slow down) the owner-only state
+    /// above it.
+    alignas(CacheLineSize) std::atomic<FreeNode*> remoteFreeHead_{nullptr};
 };
 
 } // namespace ThreadPoolPro::Detail
