@@ -135,7 +135,7 @@ auto ThreadPool::enqueue(
         });
 
 
-    return future;
+    return std::move(future);
 }
 
 
