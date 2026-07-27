@@ -41,7 +41,7 @@ auto ThreadPool::enqueue(
      */
     auto state =
         std::make_shared<
-            Detail::FutureState<Result>>();
+            Detail::Future<Result>>();
 
 
     Detail::Future<Result>
