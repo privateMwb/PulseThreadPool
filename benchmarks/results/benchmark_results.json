@@ -1,65 +1,44 @@
 [
   {
-    "suite": "Exception Path",
-    "operation": "detach (uncaught exception)",
-    "total_ns": 5259462,
+    "suite": "Steal",
+    "operation": "pushBottom + popBottom (uncontended)",
+    "total_ns": 819693,
     "iterations": 10000,
-    "ns_per_op": 525.95
+    "ns_per_op": 81.97
   },
   {
-    "suite": "Exception Path",
-    "operation": "detach (uncaught exception)",
-    "total_ns": 63741000,
+    "suite": "Steal",
+    "operation": "pushBottom + popBottom (uncontended)",
+    "total_ns": 8280615,
     "iterations": 100000,
-    "ns_per_op": 637.41
+    "ns_per_op": 82.81
   },
   {
-    "suite": "Exception Path",
-    "operation": "detach (uncaught exception)",
-    "total_ns": 771194154,
+    "suite": "Steal",
+    "operation": "pushBottom + popBottom (uncontended)",
+    "total_ns": 82486846,
     "iterations": 1000000,
-    "ns_per_op": 771.19
+    "ns_per_op": 82.49
   },
   {
-    "suite": "Exception Path",
-    "operation": "detach (caught exception)",
-    "total_ns": 11102153,
+    "suite": "Steal",
+    "operation": "pushBottom (contended by steal)",
+    "total_ns": 2420923,
     "iterations": 10000,
-    "ns_per_op": 1110.22
+    "ns_per_op": 242.09
   },
   {
-    "suite": "Exception Path",
-    "operation": "detach (caught exception)",
-    "total_ns": 65115923,
+    "suite": "Steal",
+    "operation": "pushBottom (contended by steal)",
+    "total_ns": 26184000,
     "iterations": 100000,
-    "ns_per_op": 651.16
+    "ns_per_op": 261.84
   },
   {
-    "suite": "Exception Path",
-    "operation": "detach (caught exception)",
-    "total_ns": 534765462,
+    "suite": "Steal",
+    "operation": "pushBottom (contended by steal)",
+    "total_ns": 268227770,
     "iterations": 1000000,
-    "ns_per_op": 534.77
-  },
-  {
-    "suite": "Pause Resume",
-    "operation": "pause + resume cycle",
-    "total_ns": 34054539,
-    "iterations": 10000,
-    "ns_per_op": 3405.45
-  },
-  {
-    "suite": "Pause Resume",
-    "operation": "pause + resume cycle",
-    "total_ns": 96811154,
-    "iterations": 100000,
-    "ns_per_op": 968.11
-  },
-  {
-    "suite": "Pause Resume",
-    "operation": "pause + resume cycle",
-    "total_ns": 883180538,
-    "iterations": 1000000,
-    "ns_per_op": 883.18
+    "ns_per_op": 268.23
   }
 ]
