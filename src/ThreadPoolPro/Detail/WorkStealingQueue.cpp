@@ -8,19 +8,46 @@
 #include <bit>
 #include <cassert>
 #include <new>
+#include <utility>
 
 namespace ThreadPoolPro::Detail {
 
 
 // ============================================================
-// Constructor / Destructor
+// Helpers
+// ============================================================
+
+void WorkStealingQueue::destroyNode(
+    Task* node) noexcept {
+
+    if (!node)
+        return;
+
+    node->~Task();
+
+    if constexpr (
+        alignof(Task)
+        > __STDCPP_DEFAULT_NEW_ALIGNMENT__) {
+
+        ::operator delete(
+            static_cast<void*>(node),
+            std::align_val_t(
+                alignof(Task)));
+
+    } else {
+
+        ::operator delete(
+            static_cast<void*>(node));
+    }
+}
+
+
+// ============================================================
+// Constructor
 // ============================================================
 
 WorkStealingQueue::WorkStealingQueue(
-    std::size_t initialCapacity)
-    : topIndex_{0}
-    , bottomIndex_{0}
-    , buffer_{nullptr} {
+    std::size_t initialCapacity) {
 
     assert(
         initialCapacity > 0);
@@ -29,13 +56,28 @@ WorkStealingQueue::WorkStealingQueue(
         std::has_single_bit(
             initialCapacity));
 
-    retiredBuffers_.reserve(8);
+
+    /*
+     * Reserve enough space for the common case so growth of the
+     * retired-buffer vector does not occur during queue resizing.
+     */
+    retiredBuffers_.reserve(16);
+
+
+    Buffer* initial =
+        new Buffer(
+            initialCapacity);
+
 
     buffer_.store(
-        new Buffer(initialCapacity),
+        initial,
         std::memory_order_relaxed);
 }
 
+
+// ============================================================
+// Destructor
+// ============================================================
 
 WorkStealingQueue::~WorkStealingQueue() {
 
@@ -43,9 +85,11 @@ WorkStealingQueue::~WorkStealingQueue() {
         buffer_.load(
             std::memory_order_relaxed);
 
+
     const std::size_t top =
         topIndex_.load(
             std::memory_order_relaxed);
+
 
     const std::size_t bottom =
         bottomIndex_.load(
@@ -53,15 +97,23 @@ WorkStealingQueue::~WorkStealingQueue() {
 
 
     /*
-     * Only the active buffer owns the live pointers.
+     * The active buffer contains the currently live Task pointers.
      *
-     * Retired buffers contain stale copies.
+     * Retired buffers may contain stale copies of the same pointers
+     * and therefore must never be deleted as Task owners.
      */
-    for (std::size_t i = top;
-         i < bottom;
-         ++i) {
+    if (buffer) {
 
-        delete buffer->at(i);
+        for (std::size_t i = top;
+             i < bottom;
+             ++i) {
+
+            Task* node =
+                buffer->at(i);
+
+            destroyNode(
+                node);
+        }
     }
 
 
@@ -69,7 +121,7 @@ WorkStealingQueue::~WorkStealingQueue() {
 
 
     /*
-     * Free recycled owner nodes.
+     * Destroy all owner-side recycled nodes.
      */
     while (freeHead_) {
 
@@ -102,19 +154,21 @@ WorkStealingQueue::~WorkStealingQueue() {
 
 
 // ============================================================
-// Push
+// Push Bottom
 // ============================================================
 
 void WorkStealingQueue::pushBottom(
     Task&& task) {
 
-    std::size_t bottom =
+    const std::size_t bottom =
         bottomIndex_.load(
             std::memory_order_relaxed);
+
 
     const std::size_t top =
         topIndex_.load(
             std::memory_order_acquire);
+
 
     Buffer* buffer =
         buffer_.load(
@@ -122,7 +176,10 @@ void WorkStealingQueue::pushBottom(
 
 
     /*
-     * Grow only when the ring is actually full.
+     * Buffer capacity is power-of-two.
+     *
+     * Leave one slot unused so that the circular buffer never
+     * confuses full and empty states.
      */
     if (bottom - top
         >= buffer->capacity_ - 1) {
@@ -130,17 +187,24 @@ void WorkStealingQueue::pushBottom(
         Buffer* oldBuffer =
             buffer;
 
+
         Buffer* newBuffer =
             oldBuffer->grow(
                 bottom,
                 top);
 
 
+        /*
+         * Publish the new buffer before publishing the new bottom.
+         */
         buffer_.store(
             newBuffer,
             std::memory_order_release);
 
 
+        /*
+         * Keep the old buffer alive for thieves.
+         */
         retiredBuffers_.emplace_back(
             oldBuffer);
 
@@ -151,17 +215,19 @@ void WorkStealingQueue::pushBottom(
 
 
     /*
-     * Allocate/recycle the Task node before
-     * publishing the bottom index.
+     * Construct the Task node before publishing bottomIndex_.
      */
-    buffer->at(bottom) =
+    Task* node =
         acquireNode(
             std::move(task));
 
 
+    buffer->at(bottom) =
+        node;
+
+
     /*
-     * Release fence publishes the task pointer
-     * before thieves observe bottom.
+     * Publish the task pointer.
      */
     std::atomic_thread_fence(
         std::memory_order_release);
@@ -174,11 +240,11 @@ void WorkStealingQueue::pushBottom(
 
 
 // ============================================================
-// Owner Pop
+// Pop Bottom
 // ============================================================
 
 std::optional<Task>
-WorkStealingQueue::popBottom() {
+WorkStealingQueue::popBottom() noexcept {
 
     std::size_t bottom =
         bottomIndex_.load(
@@ -197,6 +263,9 @@ WorkStealingQueue::popBottom() {
         std::memory_order_relaxed);
 
 
+    /*
+     * Synchronize with concurrent thieves.
+     */
     std::atomic_thread_fence(
         std::memory_order_seq_cst);
 
@@ -206,11 +275,15 @@ WorkStealingQueue::popBottom() {
             std::memory_order_relaxed);
 
 
+    /*
+     * Queue was empty.
+     */
     if (top > bottom) {
 
         bottomIndex_.store(
             bottom + 1,
             std::memory_order_relaxed);
+
 
         return std::nullopt;
     }
@@ -222,9 +295,9 @@ WorkStealingQueue::popBottom() {
 
 
     /*
-     * Last element.
+     * Last item:
      *
-     * Owner competes with thieves.
+     * Owner and thieves race for ownership.
      */
     if (top == bottom) {
 
@@ -238,29 +311,34 @@ WorkStealingQueue::popBottom() {
                 bottom + 1,
                 std::memory_order_relaxed);
 
+
             return std::nullopt;
         }
 
 
+        /*
+         * Restore the canonical empty state.
+         */
         bottomIndex_.store(
             bottom + 1,
             std::memory_order_relaxed);
     }
 
 
-    Task* ptr =
+    Task* node =
         buffer->at(bottom);
 
 
+    /*
+     * Move the Task out before recycling its storage.
+     */
     std::optional<Task> result{
-        std::move(*ptr)
+        std::move(*node)
     };
 
 
-    /*
-     * Owner-side recycling is safe.
-     */
-    releaseNode(ptr);
+    releaseNode(
+        node);
 
 
     return result;
@@ -272,7 +350,7 @@ WorkStealingQueue::popBottom() {
 // ============================================================
 
 std::optional<Task>
-WorkStealingQueue::steal() {
+WorkStealingQueue::steal() noexcept {
 
     std::size_t top =
         topIndex_.load(
@@ -292,14 +370,17 @@ WorkStealingQueue::steal() {
         return std::nullopt;
 
 
+    /*
+     * The active buffer must be loaded after observing the queue
+     * boundaries.
+     */
     Buffer* buffer =
         buffer_.load(
             std::memory_order_acquire);
 
 
     /*
-     * The CAS is the only operation that arbitrates
-     * competing thieves.
+     * Exactly one thief can claim this slot.
      */
     if (!topIndex_.compare_exchange_strong(
             top,
@@ -311,19 +392,23 @@ WorkStealingQueue::steal() {
     }
 
 
-    Task* ptr =
+    Task* node =
         buffer->at(top);
 
 
+    /*
+     * The thief owns the node now.
+     */
     std::optional<Task> result{
-        std::move(*ptr)
+        std::move(*node)
     };
 
 
     /*
-     * Never touch the owner free list from a thief.
+     * Never use the owner's free list from a thief.
      */
-    delete ptr;
+    destroyNode(
+        node);
 
 
     return result;
@@ -337,23 +422,32 @@ WorkStealingQueue::steal() {
 Task* WorkStealingQueue::acquireNode(
     Task&& task) {
 
+    /*
+     * Owner-side recycling.
+     */
     if (freeHead_) {
 
         void* raw =
             freeHead_;
 
+
         freeHead_ =
             freeHead_->next;
+
 
         --freeCount_;
 
 
-        return ::new (raw)
+        return ::new (
+            raw)
             Task(
                 std::move(task));
     }
 
 
+    /*
+     * Fresh allocation.
+     */
     if constexpr (
         alignof(Task)
         > __STDCPP_DEFAULT_NEW_ALIGNMENT__) {
@@ -364,7 +458,9 @@ Task* WorkStealingQueue::acquireNode(
                 std::align_val_t(
                     alignof(Task)));
 
-        return ::new (raw)
+
+        return ::new (
+            raw)
             Task(
                 std::move(task));
 
@@ -374,7 +470,9 @@ Task* WorkStealingQueue::acquireNode(
             ::operator new(
                 sizeof(Task));
 
-        return ::new (raw)
+
+        return ::new (
+            raw)
             Task(
                 std::move(task));
     }
@@ -388,9 +486,16 @@ Task* WorkStealingQueue::acquireNode(
 void WorkStealingQueue::releaseNode(
     Task* node) noexcept {
 
+    if (!node)
+        return;
+
+
     node->~Task();
 
 
+    /*
+     * Do not grow the free list beyond its configured bound.
+     */
     if (freeCount_
         >= TaskFreeListCapacity) {
 
@@ -411,6 +516,7 @@ void WorkStealingQueue::releaseNode(
                     node));
         }
 
+
         return;
     }
 
@@ -427,6 +533,7 @@ void WorkStealingQueue::releaseNode(
     freeHead_ =
         freeNode;
 
+
     ++freeCount_;
 }
 
@@ -442,6 +549,7 @@ WorkStealingQueue::size()
     const std::size_t bottom =
         bottomIndex_.load(
             std::memory_order_relaxed);
+
 
     const std::size_t top =
         topIndex_.load(

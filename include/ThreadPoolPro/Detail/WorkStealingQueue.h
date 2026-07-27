@@ -20,14 +20,21 @@
 namespace ThreadPoolPro::Detail {
 
 /**
- * @brief Chase-Lev work-stealing deque.
+ * @brief Lock-free Chase-Lev work-stealing deque.
  *
- * One owner thread pushes/pops at the bottom.
- * Multiple thief threads steal from the top.
+ * The owning worker is the only thread allowed to push and pop from
+ * the bottom. Any number of thief threads may steal from the top.
+ *
+ * The queue stores Task* rather than Task objects directly. Owner-side
+ * nodes are recycled through a private free list. Thieves never touch
+ * that free list.
+ *
+ * Lifetime requirement:
+ * - The owner must stop using the queue before destruction.
+ * - All thieves must have stopped before destruction.
  */
 class WorkStealingQueue {
   public:
-
     explicit WorkStealingQueue(
         std::size_t initialCapacity = 4096);
 
@@ -41,7 +48,9 @@ class WorkStealingQueue {
 
 
     /**
-     * @brief Pushes a task at the owner end.
+     * @brief Pushes a task onto the owner end.
+     *
+     * Owner thread only.
      */
     void pushBottom(
         Task&& task);
@@ -49,22 +58,26 @@ class WorkStealingQueue {
 
     /**
      * @brief Pops a task from the owner end.
+     *
+     * Owner thread only.
      */
     [[nodiscard]]
     std::optional<Task>
-    popBottom();
+    popBottom() noexcept;
 
 
     /**
-     * @brief Steals a task from the thief end.
+     * @brief Attempts to steal a task.
+     *
+     * May be called concurrently by multiple thieves.
      */
     [[nodiscard]]
     std::optional<Task>
-    steal();
+    steal() noexcept;
 
 
     /**
-     * @brief Approximate queue size.
+     * @brief Returns an approximate queue size.
      */
     [[nodiscard]]
     std::size_t size() const noexcept;
@@ -86,6 +99,10 @@ class WorkStealingQueue {
         Task* node) noexcept;
 
 
+    static void destroyNode(
+        Task* node) noexcept;
+
+
     alignas(CacheLineSize)
     std::atomic<std::size_t>
         topIndex_{0};
@@ -97,14 +114,21 @@ class WorkStealingQueue {
 
 
     /*
-     * Active buffer.
+     * The currently active circular buffer.
+     *
+     * Only the owner replaces this pointer.
+     * Thieves load it when stealing.
      */
     std::atomic<Buffer*>
         buffer_{nullptr};
 
 
     /*
-     * Retired buffers remain alive until destruction.
+     * Old buffers cannot immediately be destroyed because a thief
+     * may have loaded an old buffer pointer immediately before a
+     * resize.
+     *
+     * They are therefore retained until queue destruction.
      */
     std::vector<
         std::unique_ptr<Buffer>>
@@ -112,7 +136,7 @@ class WorkStealingQueue {
 
 
     /*
-     * Owner-only free list.
+     * Owner-only Task node cache.
      */
     FreeNode*
         freeHead_ = nullptr;
