@@ -1,23 +1,65 @@
 [
   {
-    "suite": "Enqueue",
-    "operation": "enqueue + result",
-    "total_ns": 34146461,
+    "suite": "Exception Path",
+    "operation": "detach (uncaught exception)",
+    "total_ns": 5259462,
     "iterations": 10000,
-    "ns_per_op": 3414.65
+    "ns_per_op": 525.95
   },
   {
-    "suite": "Enqueue",
-    "operation": "enqueue + result",
-    "total_ns": 304712923,
+    "suite": "Exception Path",
+    "operation": "detach (uncaught exception)",
+    "total_ns": 63741000,
     "iterations": 100000,
-    "ns_per_op": 3047.13
+    "ns_per_op": 637.41
   },
   {
-    "suite": "Enqueue",
-    "operation": "enqueue + result",
-    "total_ns": 3130870462,
+    "suite": "Exception Path",
+    "operation": "detach (uncaught exception)",
+    "total_ns": 771194154,
     "iterations": 1000000,
-    "ns_per_op": 3130.87
+    "ns_per_op": 771.19
+  },
+  {
+    "suite": "Exception Path",
+    "operation": "detach (caught exception)",
+    "total_ns": 11102153,
+    "iterations": 10000,
+    "ns_per_op": 1110.22
+  },
+  {
+    "suite": "Exception Path",
+    "operation": "detach (caught exception)",
+    "total_ns": 65115923,
+    "iterations": 100000,
+    "ns_per_op": 651.16
+  },
+  {
+    "suite": "Exception Path",
+    "operation": "detach (caught exception)",
+    "total_ns": 534765462,
+    "iterations": 1000000,
+    "ns_per_op": 534.77
+  },
+  {
+    "suite": "Pause Resume",
+    "operation": "pause + resume cycle",
+    "total_ns": 34054539,
+    "iterations": 10000,
+    "ns_per_op": 3405.45
+  },
+  {
+    "suite": "Pause Resume",
+    "operation": "pause + resume cycle",
+    "total_ns": 96811154,
+    "iterations": 100000,
+    "ns_per_op": 968.11
+  },
+  {
+    "suite": "Pause Resume",
+    "operation": "pause + resume cycle",
+    "total_ns": 883180538,
+    "iterations": 1000000,
+    "ns_per_op": 883.18
   }
 ]

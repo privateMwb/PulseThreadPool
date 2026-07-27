@@ -9,7 +9,6 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
-#include <stdexcept>
 #include <thread>
 
 namespace ThreadPoolPro {
@@ -18,13 +17,13 @@ namespace {
 
 thread_local std::uint32_t stealRngState = 0;
 
-std::uint32_t nextStealRandom() noexcept {
+inline std::uint32_t nextRandom() noexcept {
     if (stealRngState == 0) {
         stealRngState =
             static_cast<std::uint32_t>(
                 std::hash<std::thread::id>{}(
-                    std::this_thread::get_id())) |
-            1u;
+                    std::this_thread::get_id()))
+            | 1u;
     }
 
     stealRngState ^= stealRngState << 13;
@@ -34,20 +33,14 @@ std::uint32_t nextStealRandom() noexcept {
     return stealRngState;
 }
 
-std::size_t randomBelow(std::size_t bound) noexcept {
-    if (bound <= 1)
-        return 0;
-
-    return static_cast<std::size_t>(
-        nextStealRandom() % static_cast<std::uint32_t>(bound));
+inline std::size_t randomIndex(std::size_t count) noexcept {
+    return count == 0
+        ? 0
+        : static_cast<std::size_t>(nextRandom() % count);
 }
 
 } // namespace
 
-
-// ============================================================
-// Static Thread State
-// ============================================================
 
 thread_local ThreadPool::Worker*
     ThreadPool::currentWorker_ = nullptr;
@@ -60,34 +53,38 @@ thread_local bool
 
 
 // ============================================================
-// Constructors & Destructor
+// Constructor / Destructor
 // ============================================================
 
 ThreadPool::ThreadPool(std::size_t threadCount)
-    : workerCount_{
-          threadCount == 0 ? std::size_t{1} : threadCount}
+    : workerCount_(
+          threadCount == 0
+              ? std::size_t{1}
+              : threadCount)
     , workers_(workerCount_)
-    , injectionShardCount_{
-          std::clamp(
-              workerCount_,
-              MinInjectionShards,
-              MaxInjectionShards)}
-    , injectionShards_(injectionShardCount_)
-    , injectionRoundRobin_{0}
-    , injectionTasks_{0}
-    , pendingTasks_{0}
-    , wakeToken_{0}
-    , runState_{RunState::Running}
-    , paused_{false}
-    , activeTasks_{0}
-    , exceptionCounter_{0}
-    , idleWorkers_{0}
-    , waitIdleWaiters_{0}
-{
-    auto leased =
-        Detail::ThreadMarket::instance().lease(workerCount_);
+    /*
+     * One shard is enough for one worker.
+     *
+     * For multiple workers, use 2 shards per worker but cap the
+     * number so construction doesn't become disproportionately
+     * expensive for large pools.
+     */
+    , injectionShardCount_(
+          workerCount_ == 1
+              ? std::size_t{1}
+              : std::min<std::size_t>(
+                    workerCount_ * 2,
+                    64))
+    , injectionShards_(injectionShardCount_) {
 
-    for (std::size_t i = 0; i < workerCount_; ++i) {
+    auto leased =
+        Detail::ThreadMarket::instance()
+            .lease(workerCount_);
+
+    for (std::size_t i = 0;
+         i < workerCount_;
+         ++i) {
+
         workers_[i].marketThread_ = leased[i];
 
         leased[i]->assign(
@@ -130,84 +127,105 @@ void ThreadPool::resume() noexcept {
 // ============================================================
 
 void ThreadPool::waitIdle() noexcept {
+
     waitIdleWaiters_.fetch_add(
         1,
         std::memory_order_relaxed);
 
-    for (;;) {
-        RunState state =
-            runState_.load(std::memory_order_acquire);
+    /*
+     * External waiters help, but only opportunistically.
+     *
+     * The previous implementation could repeatedly perform:
+     *
+     *   workerCount steals
+     *   injectionShardCount locks
+     *
+     * on every failed attempt.
+     *
+     * That creates a second work-stealing system competing with
+     * the actual workers.
+     */
+    std::size_t helpAttempts = 0;
 
-        if (state != RunState::Running)
+    for (;;) {
+
+        if (runState_.load(
+                std::memory_order_acquire)
+            != RunState::Running) {
             break;
+        }
 
         if (pendingTasks_.load(
-                std::memory_order_acquire) == 0 &&
+                std::memory_order_acquire)
+                == 0
+            &&
             activeTasks_.load(
-                std::memory_order_acquire) == 0) {
+                std::memory_order_acquire)
+                == 0) {
             break;
         }
 
-        /*
-         * Help execute work.
+        if (helpAttempts < MaxExternalHelpAttempts) {
 
-         * This is intentionally retained because it improves latency
-         * for the common:
-         *
-         *     submit batch
-         *     waitIdle()
-         *
-         * pattern.
-         */
-        if (auto task = fetchTaskExternal()) {
-            pendingTasks_.fetch_sub(
-                1,
-                std::memory_order_relaxed);
+            if (auto task = fetchTaskExternal()) {
 
-            activeTasks_.fetch_add(
-                1,
-                std::memory_order_relaxed);
-
-            try {
-                (*task)();
-            } catch (...) {
-                exceptionCounter_.fetch_add(
+                pendingTasks_.fetch_sub(
                     1,
                     std::memory_order_relaxed);
+
+                activeTasks_.fetch_add(
+                    1,
+                    std::memory_order_relaxed);
+
+                try {
+                    (*task)();
+                } catch (...) {
+                    exceptionCounter_.fetch_add(
+                        1,
+                        std::memory_order_relaxed);
+                }
+
+                activeTasks_.fetch_sub(
+                    1,
+                    std::memory_order_relaxed);
+
+                ++helpAttempts;
+
+                if (waitIdleWaiters_.load(
+                        std::memory_order_relaxed)
+                    > 1) {
+                    wakeAll();
+                }
+
+                continue;
             }
 
-            activeTasks_.fetch_sub(
-                1,
-                std::memory_order_relaxed);
-
-            /*
-             * A task completion can make the wait condition true.
-             * Only wake other waiters; the current waiter is already
-             * executing.
-             */
-            if (waitIdleWaiters_.load(
-                    std::memory_order_relaxed) > 1) {
-                wakeAll();
-            }
-
-            continue;
+            ++helpAttempts;
         }
 
-        waitUntil(
-            [this] {
-                return
-                    runState_.load(
-                        std::memory_order_acquire) !=
-                        RunState::Running ||
+        helpAttempts = 0;
 
-                    (
-                        pendingTasks_.load(
-                            std::memory_order_acquire) == 0 &&
+        waitUntil([this] {
 
-                        activeTasks_.load(
-                            std::memory_order_acquire) == 0
-                    );
-            });
+            return
+                runState_.load(
+                    std::memory_order_acquire)
+                    != RunState::Running
+
+                ||
+
+                (
+                    pendingTasks_.load(
+                        std::memory_order_acquire)
+                        == 0
+
+                    &&
+
+                    activeTasks_.load(
+                        std::memory_order_acquire)
+                        == 0
+                );
+        });
     }
 
     waitIdleWaiters_.fetch_sub(
@@ -223,7 +241,7 @@ void ThreadPool::waitIdle() noexcept {
 void ThreadPool::shutdown(
     ShutdownMode mode) noexcept {
 
-    RunState desired =
+    const RunState desired =
         mode == ShutdownMode::FinishTasks
             ? RunState::ShuttingDownFinish
             : RunState::ShuttingDownDiscard;
@@ -245,13 +263,20 @@ void ThreadPool::shutdown(
         std::this_thread::get_id();
 
     for (auto& worker : workers_) {
-        if (worker.marketThread_ == nullptr)
+
+        auto* thread =
+            worker.marketThread_;
+
+        if (thread == nullptr)
             continue;
 
-        if (worker.marketThread_->id() == callerId) {
+        if (thread->id() == callerId) {
+
             selfDetachRequested_ = true;
+
         } else {
-            worker.marketThread_->waitDone();
+
+            thread->waitDone();
         }
 
         worker.marketThread_ = nullptr;
@@ -260,33 +285,38 @@ void ThreadPool::shutdown(
 
 
 // ============================================================
-// Runtime Statistics
+// Statistics
 // ============================================================
 
-std::size_t ThreadPool::activeTaskCount() const noexcept {
+std::size_t
+ThreadPool::activeTaskCount() const noexcept {
     return activeTasks_.load(
         std::memory_order_relaxed);
 }
 
 
-std::size_t ThreadPool::queuedTasks() const noexcept {
+std::size_t
+ThreadPool::queuedTasks() const noexcept {
     return pendingTasks_.load(
         std::memory_order_relaxed);
 }
 
 
-std::size_t ThreadPool::threadCount() const noexcept {
+std::size_t
+ThreadPool::threadCount() const noexcept {
     return workerCount_;
 }
 
 
-std::size_t ThreadPool::exceptionCount() const noexcept {
+std::size_t
+ThreadPool::exceptionCount() const noexcept {
     return exceptionCounter_.load(
         std::memory_order_relaxed);
 }
 
 
-std::size_t ThreadPool::idleThreadCount() const noexcept {
+std::size_t
+ThreadPool::idleThreadCount() const noexcept {
     return idleWorkers_.load(
         std::memory_order_relaxed);
 }
@@ -310,13 +340,13 @@ bool ThreadPool::isPaused() const noexcept {
 
 bool ThreadPool::isStopped() const noexcept {
     return runState_.load(
-        std::memory_order_relaxed) !=
-        RunState::Running;
+        std::memory_order_relaxed)
+        != RunState::Running;
 }
 
 
 // ============================================================
-// Worker Execution
+// Worker Loop
 // ============================================================
 
 void ThreadPool::workerLoop(
@@ -331,11 +361,9 @@ void ThreadPool::workerLoop(
     selfDetachRequested_ =
         false;
 
-    std::size_t failedStealRounds = 0;
+    for (;;) {
 
-    while (true) {
-
-        RunState state =
+        const RunState state =
             runState_.load(
                 std::memory_order_acquire);
 
@@ -345,31 +373,36 @@ void ThreadPool::workerLoop(
         }
 
         if (state ==
-                RunState::ShuttingDownFinish &&
+                RunState::ShuttingDownFinish
+            &&
             pendingTasks_.load(
-                std::memory_order_acquire) == 0) {
+                std::memory_order_acquire)
+                == 0) {
             return;
         }
 
-
         if (paused_.load(
-                std::memory_order_acquire) &&
-            state == RunState::Running) {
+                std::memory_order_acquire)
+            &&
+            state ==
+                RunState::Running) {
 
             idleWorkers_.fetch_add(
                 1,
                 std::memory_order_relaxed);
 
-            waitUntil(
-                [this] {
-                    return
-                        runState_.load(
-                            std::memory_order_acquire) !=
-                            RunState::Running ||
+            waitUntil([this] {
 
-                        !paused_.load(
-                            std::memory_order_acquire);
-                });
+                return
+                    runState_.load(
+                        std::memory_order_acquire)
+                        != RunState::Running
+
+                    ||
+
+                    !paused_.load(
+                        std::memory_order_acquire);
+            });
 
             idleWorkers_.fetch_sub(
                 1,
@@ -382,20 +415,20 @@ void ThreadPool::workerLoop(
         if (auto task =
                 fetchTask(index)) {
 
-            failedStealRounds = 0;
-
             if (paused_.load(
-                    std::memory_order_acquire) &&
+                    std::memory_order_acquire)
+                &&
                 runState_.load(
-                    std::memory_order_acquire) ==
-                    RunState::Running) {
+                    std::memory_order_acquire)
+                    == RunState::Running) {
 
-                currentWorker_->queue_.pushBottom(
-                    std::move(*task));
+                currentWorker_
+                    ->queue_
+                    .pushBottom(
+                        std::move(*task));
 
                 continue;
             }
-
 
             pendingTasks_.fetch_sub(
                 1,
@@ -413,11 +446,14 @@ void ThreadPool::workerLoop(
                 threw = true;
             }
 
-
+            /*
+             * A worker called shutdown() from its task.
+             *
+             * Do not access the pool after this point.
+             */
             if (selfDetachRequested_) {
                 return;
             }
-
 
             if (threw) {
                 exceptionCounter_.fetch_add(
@@ -425,14 +461,14 @@ void ThreadPool::workerLoop(
                     std::memory_order_relaxed);
             }
 
-
             activeTasks_.fetch_sub(
                 1,
                 std::memory_order_relaxed);
 
-
             if (waitIdleWaiters_.load(
-                    std::memory_order_relaxed) != 0) {
+                    std::memory_order_relaxed)
+                != 0) {
+
                 wakeAll();
             }
 
@@ -440,78 +476,59 @@ void ThreadPool::workerLoop(
         }
 
 
-        state =
-            runState_.load(
-                std::memory_order_acquire);
-
-
-        if (state !=
-            RunState::Running) {
-
-            if (state ==
-                RunState::ShuttingDownDiscard) {
-                return;
-            }
+        /*
+         * FinishTasks:
+         *
+         * pendingTasks_ may still be non-zero because another
+         * worker is executing a task.
+         */
+        if (state ==
+            RunState::ShuttingDownFinish) {
 
             if (pendingTasks_.load(
-                    std::memory_order_acquire) == 0) {
+                    std::memory_order_acquire)
+                == 0) {
                 return;
             }
 
-            /*
-             * FinishTasks:
-             *
-             * A task may still be executing and may submit another
-             * task. Because submit() is disabled once shutdown starts,
-             * no new external producer can add work.
-             *
-             * Use a short yield rather than a fixed 50us sleep.
-             * This avoids unnecessarily delaying shutdown for tiny
-             * tasks.
-             */
             std::this_thread::yield();
 
             continue;
         }
 
 
-        ++failedStealRounds;
+        idleWorkers_.fetch_add(
+            1,
+            std::memory_order_relaxed);
 
-        /*
-         * After repeated failed rounds, stop hammering the queues.
-         * waitUntil() provides spin -> yield -> park behavior.
-         */
-        if (failedStealRounds >= 2) {
-            idleWorkers_.fetch_add(
-                1,
-                std::memory_order_relaxed);
+        waitUntil([this] {
 
-            waitUntil(
-                [this] {
-                    return
-                        runState_.load(
-                            std::memory_order_acquire) !=
-                            RunState::Running ||
+            return
+                runState_.load(
+                    std::memory_order_acquire)
+                    != RunState::Running
 
-                        paused_.load(
-                            std::memory_order_acquire) ||
+                ||
 
-                        pendingTasks_.load(
-                            std::memory_order_acquire) != 0;
-                });
+                paused_.load(
+                    std::memory_order_acquire)
 
-            idleWorkers_.fetch_sub(
-                1,
-                std::memory_order_relaxed);
+                ||
 
-            failedStealRounds = 0;
-        }
+                pendingTasks_.load(
+                    std::memory_order_acquire)
+                    != 0;
+        });
+
+        idleWorkers_.fetch_sub(
+            1,
+            std::memory_order_relaxed);
     }
 }
 
 
 // ============================================================
-// Task Retrieval
+// Worker Task Retrieval
 // ============================================================
 
 std::optional<ThreadPool::Task>
@@ -523,9 +540,10 @@ ThreadPool::fetchTask(
 
 
     /*
-     * 1. Always prefer local work.
+     * Fastest possible path.
      *
-     * This is the fastest path.
+     * Tasks submitted recursively from a worker are always
+     * available here.
      */
     if (auto task =
             self.queue_.popBottom()) {
@@ -534,66 +552,124 @@ ThreadPool::fetchTask(
 
 
     /*
-     * 2. Try a bounded number of random victims.
+     * With one worker there is nothing to steal.
      *
-     * The old implementation checked every worker.
-     *
-     * With 32 workers:
-     *
-     *     32 workers × 31 victims
-     *
-     * could generate hundreds of unnecessary atomic operations
-     * for every empty scheduling round.
-     *
-     * Bounded stealing keeps this approximately constant.
+     * Go directly to the single injection queue.
      */
-    if (workerCount_ > 1) {
+    if (workerCount_ == 1) {
 
-        const std::size_t attempts =
-            std::min(
-                workerCount_ - 1,
-                MaxStealAttempts);
+        InjectionShard& shard =
+            injectionShards_[0];
 
-        std::size_t offset =
-            1 + randomBelow(
-                    workerCount_ - 1);
+        if (shard.size_.load(
+                std::memory_order_acquire)
+            != 0) {
 
-        for (std::size_t i = 0;
-             i < attempts;
-             ++i) {
+            std::lock_guard lock(
+                shard.mutex_);
 
-            const std::size_t victim =
-                (index + offset + i) %
-                workerCount_;
+            if (!shard.queue_.empty()) {
 
-            if (victim == index)
-                continue;
+                Task task(
+                    std::move(
+                        shard.queue_.front()));
 
-            if (auto task =
-                    workers_[victim]
-                        .queue_
-                        .steal()) {
+                shard.queue_.pop_front();
+
+                shard.size_.fetch_sub(
+                    1,
+                    std::memory_order_relaxed);
+
                 return task;
             }
+        }
+
+        return std::nullopt;
+    }
+
+
+    /*
+     * Bounded stealing.
+     *
+     * Never scan the entire worker set on every failed fetch.
+     */
+    const std::size_t probes =
+        std::min(
+            MaxStealProbes,
+            workerCount_ - 1);
+
+    const std::size_t start =
+        randomIndex(workerCount_ - 1);
+
+    for (std::size_t i = 0;
+         i < probes;
+         ++i) {
+
+        std::size_t victim =
+            (index + 1 +
+             start + i)
+            % workerCount_;
+
+        WorkQueue& queue =
+            workers_[victim].queue_;
+
+        if (queue.size() == 0)
+            continue;
+
+        if (auto task =
+                queue.steal()) {
+            return task;
         }
     }
 
 
     /*
-     * 3. External injection queues.
-     *
-     * First use the global hint.
-     *
-     * If zero, don't touch any mutex or shard.
+     * Bounded injection scanning.
      */
-    if (injectionTasks_.load(
-            std::memory_order_acquire) != 0) {
+    const std::size_t shardStart =
+        injectionRoundRobin_.fetch_add(
+            1,
+            std::memory_order_relaxed)
+        % injectionShardCount_;
 
-        if (refillLocalQueue(index)) {
-            return self.queue_.popBottom();
+    const std::size_t probesInjection =
+        std::min(
+            MaxInjectionProbes,
+            injectionShardCount_);
+
+    for (std::size_t i = 0;
+         i < probesInjection;
+         ++i) {
+
+        InjectionShard& shard =
+            injectionShards_[
+                (shardStart + i)
+                % injectionShardCount_];
+
+        if (shard.size_.load(
+                std::memory_order_acquire)
+            == 0) {
+            continue;
         }
-    }
 
+        std::lock_guard lock(
+            shard.mutex_);
+
+        if (shard.queue_.empty())
+            continue;
+
+        Task task(
+            std::move(
+                shard.queue_.front()));
+
+        shard.queue_.pop_front();
+
+        shard.size_.fetch_sub(
+            1,
+            std::memory_order_relaxed);
+
+        return task;
+    }
 
     return std::nullopt;
 }
@@ -607,73 +683,73 @@ std::optional<ThreadPool::Task>
 ThreadPool::fetchTaskExternal() {
 
     /*
-     * First steal from a bounded number of worker queues.
+     * External helper has no local queue.
+     *
+     * Limit the number of workers inspected.
      */
-    if (workerCount_ > 0) {
+    const std::size_t probes =
+        std::min(
+            MaxStealProbes,
+            workerCount_);
 
-        const std::size_t attempts =
-            std::min(
-                workerCount_,
-                MaxStealAttempts);
+    const std::size_t start =
+        randomIndex(workerCount_);
 
-        const std::size_t offset =
-            randomBelow(workerCount_);
+    for (std::size_t i = 0;
+         i < probes;
+         ++i) {
 
-        for (std::size_t i = 0;
-             i < attempts;
-             ++i) {
+        WorkQueue& queue =
+            workers_[
+                (start + i)
+                % workerCount_]
+                .queue_;
 
-            const std::size_t victim =
-                (offset + i) %
-                workerCount_;
+        if (queue.size() == 0)
+            continue;
 
-            if (auto task =
-                    workers_[victim]
-                        .queue_
-                        .steal()) {
-                return task;
-            }
+        if (auto task =
+                queue.steal()) {
+            return task;
         }
     }
 
 
     /*
-     * No injection work is known to exist.
+     * Check only a bounded number of
+     * injection queues.
      */
-    if (injectionTasks_.load(
-            std::memory_order_acquire) == 0) {
-        return std::nullopt;
-    }
+    const std::size_t startShard =
+        injectionRoundRobin_.fetch_add(
+            1,
+            std::memory_order_relaxed)
+        % injectionShardCount_;
 
-
-    /*
-     * External helper directly consumes from injection queues.
-     *
-     * Unlike workers, it doesn't have a local queue, so take one task.
-     */
-    const std::size_t offset =
-        randomBelow(injectionShardCount_);
+    const std::size_t probesInjection =
+        std::min(
+            MaxInjectionProbes,
+            injectionShardCount_);
 
     for (std::size_t i = 0;
-         i < injectionShardCount_;
+         i < probesInjection;
          ++i) {
 
         InjectionShard& shard =
             injectionShards_[
-                (offset + i) %
-                injectionShardCount_];
+                (startShard + i)
+                % injectionShardCount_];
 
         if (shard.size_.load(
-                std::memory_order_acquire) == 0) {
+                std::memory_order_acquire)
+            == 0) {
             continue;
         }
 
         std::lock_guard lock(
             shard.mutex_);
 
-        if (shard.queue_.empty()) {
+        if (shard.queue_.empty())
             continue;
-        }
 
         Task task(
             std::move(
@@ -685,229 +761,19 @@ ThreadPool::fetchTaskExternal() {
             1,
             std::memory_order_relaxed);
 
-        injectionTasks_.fetch_sub(
-            1,
-            std::memory_order_release);
-
         return task;
     }
-
 
     return std::nullopt;
 }
 
 
 // ============================================================
-// Injection Queue Refill
-// ============================================================
-
-bool ThreadPool::refillLocalQueue(
-    std::size_t workerIndex) {
-
-    if (injectionTasks_.load(
-            std::memory_order_acquire) == 0) {
-        return false;
-    }
-
-
-    /*
-     * Randomize the starting shard.
-     *
-     * Different workers therefore don't all attack shard zero
-     * simultaneously.
-     */
-    const std::size_t offset =
-        (workerIndex +
-         randomBelow(injectionShardCount_)) %
-        injectionShardCount_;
-
-
-    for (std::size_t i = 0;
-         i < injectionShardCount_;
-         ++i) {
-
-        const std::size_t shardIndex =
-            (offset + i) %
-            injectionShardCount_;
-
-
-        if (drainInjectionShard(
-                workerIndex,
-                shardIndex)) {
-            return true;
-        }
-    }
-
-
-    return false;
-}
-
-
-// ============================================================
-// Injection Queue Batch Drain
-// ============================================================
-
-bool ThreadPool::drainInjectionShard(
-    std::size_t workerIndex,
-    std::size_t shardIndex) {
-
-    InjectionShard& shard =
-        injectionShards_[shardIndex];
-
-    if (shard.size_.load(
-            std::memory_order_acquire) == 0) {
-        return false;
-    }
-
-
-    std::lock_guard lock(
-        shard.mutex_);
-
-
-    if (shard.queue_.empty()) {
-        return false;
-    }
-
-
-    Worker& worker =
-        workers_[workerIndex];
-
-
-    /*
-     * Move multiple tasks into the worker's local queue.
-     *
-     * One mutex acquisition now services up to 32 tasks.
-     */
-    const std::size_t count =
-        std::min(
-            InjectionBatchSize,
-            shard.queue_.size());
-
-
-    for (std::size_t i = 0;
-         i < count;
-         ++i) {
-
-        worker.queue_.pushBottom(
-            std::move(
-                shard.queue_.front()));
-
-        shard.queue_.pop_front();
-    }
-
-
-    shard.size_.fetch_sub(
-        count,
-        std::memory_order_relaxed);
-
-    injectionTasks_.fetch_sub(
-        count,
-        std::memory_order_release);
-
-
-    return true;
-}
-
-
-// ============================================================
-// Task Submission
-// ============================================================
-
-void ThreadPool::submit(
-    Task&& task) {
-
-    if (runState_.load(
-            std::memory_order_acquire) !=
-        RunState::Running) {
-
-        throw std::runtime_error(
-            "submit on stopped ThreadPool");
-    }
-
-
-    /*
-     * Worker-local submission:
-     *
-     * This remains the fastest path.
-     */
-    if (currentWorker_ != nullptr) {
-
-        currentWorker_->queue_.pushBottom(
-            std::move(task));
-
-        pendingTasks_.fetch_add(
-            1,
-            std::memory_order_release);
-
-        /*
-         * A worker submitting work to itself does not need a wakeup.
-         * It will immediately return to its own queue.
-         */
-        return;
-    }
-
-
-    /*
-     * External submission.
-     */
-    const std::size_t shardIndex =
-        injectionRoundRobin_.fetch_add(
-            1,
-            std::memory_order_relaxed) %
-        injectionShardCount_;
-
-
-    InjectionShard& shard =
-        injectionShards_[shardIndex];
-
-
-    {
-        std::lock_guard lock(
-            shard.mutex_);
-
-        shard.queue_.push_back(
-            std::move(task));
-
-        shard.size_.fetch_add(
-            1,
-            std::memory_order_relaxed);
-    }
-
-
-    /*
-     * Publish the task as globally available.
-     *
-     * The queue insertion happened before this release operation.
-     */
-    injectionTasks_.fetch_add(
-        1,
-        std::memory_order_release);
-
-
-    pendingTasks_.fetch_add(
-        1,
-        std::memory_order_release);
-
-
-    /*
-     * Wake one sleeping worker.
-     *
-     * We intentionally don't wake every worker. One newly submitted
-     * task generally only requires one worker.
-     */
-    if (idleWorkers_.load(
-            std::memory_order_acquire) != 0) {
-
-        wakeOne();
-    }
-}
-
-
-// ============================================================
-// Worker Wakeup
+// Wakeup
 // ============================================================
 
 void ThreadPool::wakeOne() noexcept {
+
     wakeToken_.fetch_add(
         1,
         std::memory_order_release);
@@ -917,6 +783,7 @@ void ThreadPool::wakeOne() noexcept {
 
 
 void ThreadPool::wakeAll() noexcept {
+
     wakeToken_.fetch_add(
         1,
         std::memory_order_release);

@@ -1,10 +1,11 @@
 /**
  * @file WorkStealingQueue.h
- * @brief Lock-free Chase-Lev work-stealing deque of Task pointers.
+ * @brief Chase-Lev work-stealing deque.
  */
 
 #pragma once
 
+// clang-format off
 #include "Buffer.h"
 #include "Task.h"
 #include "Utility.h"
@@ -14,16 +15,21 @@
 #include <memory>
 #include <optional>
 #include <vector>
+// clang-format on
 
 namespace ThreadPoolPro::Detail {
 
 /**
- * @brief Lock-free Chase-Lev work-stealing deque.
+ * @brief Chase-Lev work-stealing deque.
+ *
+ * One owner thread pushes/pops at the bottom.
+ * Multiple thief threads steal from the top.
  */
 class WorkStealingQueue {
   public:
+
     explicit WorkStealingQueue(
-        std::size_t initialCapacity = 1024);
+        std::size_t initialCapacity = 4096);
 
     ~WorkStealingQueue();
 
@@ -33,59 +39,87 @@ class WorkStealingQueue {
     WorkStealingQueue& operator=(
         const WorkStealingQueue&) = delete;
 
+
+    /**
+     * @brief Pushes a task at the owner end.
+     */
     void pushBottom(
         Task&& task);
 
+
+    /**
+     * @brief Pops a task from the owner end.
+     */
     [[nodiscard]]
     std::optional<Task>
     popBottom();
 
+
+    /**
+     * @brief Steals a task from the thief end.
+     */
     [[nodiscard]]
     std::optional<Task>
     steal();
 
+
+    /**
+     * @brief Approximate queue size.
+     */
     [[nodiscard]]
-    std::size_t
-    size() const noexcept;
+    std::size_t size() const noexcept;
+
 
   private:
+
     struct FreeNode {
         FreeNode* next;
     };
+
 
     [[nodiscard]]
     Task* acquireNode(
         Task&& task);
 
+
     void releaseNode(
         Task* node) noexcept;
 
+
+    alignas(CacheLineSize)
+    std::atomic<std::size_t>
+        topIndex_{0};
+
+
+    alignas(CacheLineSize)
+    std::atomic<std::size_t>
+        bottomIndex_{0};
+
+
     /*
-     * Owner writes bottom.
-     * Thieves write top.
-     *
-     * Cache-line separation prevents false sharing between the two.
+     * Active buffer.
      */
-    alignas(CacheLineSize)
-        std::atomic<std::size_t>
-            topIndex_;
-
-    alignas(CacheLineSize)
-        std::atomic<std::size_t>
-            bottomIndex_;
-
     std::atomic<Buffer*>
-        buffer_;
+        buffer_{nullptr};
 
+
+    /*
+     * Retired buffers remain alive until destruction.
+     */
     std::vector<
         std::unique_ptr<Buffer>>
         retiredBuffers_;
 
-    FreeNode* freeHead_ =
-        nullptr;
 
-    std::size_t freeCount_ =
-        0;
+    /*
+     * Owner-only free list.
+     */
+    FreeNode*
+        freeHead_ = nullptr;
+
+
+    std::size_t
+        freeCount_ = 0;
 };
 
 } // namespace ThreadPoolPro::Detail

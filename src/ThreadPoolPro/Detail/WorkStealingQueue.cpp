@@ -1,6 +1,6 @@
 /**
  * @file WorkStealingQueue.cpp
- * @brief WorkStealingQueue implementation.
+ * @brief Chase-Lev work-stealing deque implementation.
  */
 
 #include <ThreadPoolPro/Detail/WorkStealingQueue.h>
@@ -13,7 +13,7 @@ namespace ThreadPoolPro::Detail {
 
 
 // ============================================================
-// Constructors & Destructor
+// Constructor / Destructor
 // ============================================================
 
 WorkStealingQueue::WorkStealingQueue(
@@ -29,14 +29,7 @@ WorkStealingQueue::WorkStealingQueue(
         std::has_single_bit(
             initialCapacity));
 
-
-    /*
-     * Buffer growth is infrequent.
-     * Reserve enough room for the common growth history so that
-     * vector reallocation doesn't occur during the hot path.
-     */
     retiredBuffers_.reserve(8);
-
 
     buffer_.store(
         new Buffer(initialCapacity),
@@ -50,7 +43,6 @@ WorkStealingQueue::~WorkStealingQueue() {
         buffer_.load(
             std::memory_order_relaxed);
 
-
     const std::size_t top =
         topIndex_.load(
             std::memory_order_relaxed);
@@ -61,9 +53,9 @@ WorkStealingQueue::~WorkStealingQueue() {
 
 
     /*
-     * Only the active buffer owns the currently reachable pointers.
+     * Only the active buffer owns the live pointers.
      *
-     * Retired buffers contain stale pointer copies.
+     * Retired buffers contain stale copies.
      */
     for (std::size_t i = top;
          i < bottom;
@@ -77,7 +69,7 @@ WorkStealingQueue::~WorkStealingQueue() {
 
 
     /*
-     * Destroy recycled nodes.
+     * Free recycled owner nodes.
      */
     while (freeHead_) {
 
@@ -86,8 +78,8 @@ WorkStealingQueue::~WorkStealingQueue() {
 
 
         if constexpr (
-            alignof(Task) >
-            __STDCPP_DEFAULT_NEW_ALIGNMENT__) {
+            alignof(Task)
+            > __STDCPP_DEFAULT_NEW_ALIGNMENT__) {
 
             ::operator delete(
                 static_cast<void*>(
@@ -110,7 +102,7 @@ WorkStealingQueue::~WorkStealingQueue() {
 
 
 // ============================================================
-// pushBottom
+// Push
 // ============================================================
 
 void WorkStealingQueue::pushBottom(
@@ -120,11 +112,9 @@ void WorkStealingQueue::pushBottom(
         bottomIndex_.load(
             std::memory_order_relaxed);
 
-
     const std::size_t top =
         topIndex_.load(
             std::memory_order_acquire);
-
 
     Buffer* buffer =
         buffer_.load(
@@ -132,10 +122,10 @@ void WorkStealingQueue::pushBottom(
 
 
     /*
-     * Grow only when the circular buffer is actually full.
+     * Grow only when the ring is actually full.
      */
-    if (bottom - top >
-        buffer->capacity_ - 1) {
+    if (bottom - top
+        >= buffer->capacity_ - 1) {
 
         Buffer* oldBuffer =
             buffer;
@@ -160,13 +150,18 @@ void WorkStealingQueue::pushBottom(
     }
 
 
+    /*
+     * Allocate/recycle the Task node before
+     * publishing the bottom index.
+     */
     buffer->at(bottom) =
         acquireNode(
             std::move(task));
 
 
     /*
-     * Publish the task before publishing bottom.
+     * Release fence publishes the task pointer
+     * before thieves observe bottom.
      */
     std::atomic_thread_fence(
         std::memory_order_release);
@@ -179,7 +174,7 @@ void WorkStealingQueue::pushBottom(
 
 
 // ============================================================
-// popBottom
+// Owner Pop
 // ============================================================
 
 std::optional<Task>
@@ -202,11 +197,6 @@ WorkStealingQueue::popBottom() {
         std::memory_order_relaxed);
 
 
-    /*
-     * Chase-Lev owner/thief synchronization.
-     *
-     * This fence is required for the last-element race.
-     */
     std::atomic_thread_fence(
         std::memory_order_seq_cst);
 
@@ -232,9 +222,9 @@ WorkStealingQueue::popBottom() {
 
 
     /*
-     * Last-element race.
+     * Last element.
      *
-     * The owner and a thief may both attempt to claim it.
+     * Owner competes with thieves.
      */
     if (top == bottom) {
 
@@ -267,6 +257,9 @@ WorkStealingQueue::popBottom() {
     };
 
 
+    /*
+     * Owner-side recycling is safe.
+     */
     releaseNode(ptr);
 
 
@@ -275,23 +268,17 @@ WorkStealingQueue::popBottom() {
 
 
 // ============================================================
-// steal
+// Steal
 // ============================================================
 
 std::optional<Task>
 WorkStealingQueue::steal() {
 
-    /*
-     * Acquire-load top.
-     */
     std::size_t top =
         topIndex_.load(
             std::memory_order_acquire);
 
 
-    /*
-     * Synchronize with the owner's bottom publication.
-     */
     std::atomic_thread_fence(
         std::memory_order_seq_cst);
 
@@ -311,10 +298,8 @@ WorkStealingQueue::steal() {
 
 
     /*
-     * Only one thief can claim this top index.
-     *
-     * seq_cst is retained here because this is the critical
-     * Chase-Lev last-element race.
+     * The CAS is the only operation that arbitrates
+     * competing thieves.
      */
     if (!topIndex_.compare_exchange_strong(
             top,
@@ -336,7 +321,7 @@ WorkStealingQueue::steal() {
 
 
     /*
-     * Thieves never touch the owner's free list.
+     * Never touch the owner free list from a thief.
      */
     delete ptr;
 
@@ -346,7 +331,7 @@ WorkStealingQueue::steal() {
 
 
 // ============================================================
-// Node Recycling
+// Node Allocation
 // ============================================================
 
 Task* WorkStealingQueue::acquireNode(
@@ -357,10 +342,8 @@ Task* WorkStealingQueue::acquireNode(
         void* raw =
             freeHead_;
 
-
         freeHead_ =
             freeHead_->next;
-
 
         --freeCount_;
 
@@ -372,15 +355,14 @@ Task* WorkStealingQueue::acquireNode(
 
 
     if constexpr (
-        alignof(Task) >
-        __STDCPP_DEFAULT_NEW_ALIGNMENT__) {
+        alignof(Task)
+        > __STDCPP_DEFAULT_NEW_ALIGNMENT__) {
 
         void* raw =
             ::operator new(
                 sizeof(Task),
                 std::align_val_t(
                     alignof(Task)));
-
 
         return ::new (raw)
             Task(
@@ -392,7 +374,6 @@ Task* WorkStealingQueue::acquireNode(
             ::operator new(
                 sizeof(Task));
 
-
         return ::new (raw)
             Task(
                 std::move(task));
@@ -400,18 +381,22 @@ Task* WorkStealingQueue::acquireNode(
 }
 
 
+// ============================================================
+// Node Recycling
+// ============================================================
+
 void WorkStealingQueue::releaseNode(
     Task* node) noexcept {
 
     node->~Task();
 
 
-    if (freeCount_ >=
-        TaskFreeListCapacity) {
+    if (freeCount_
+        >= TaskFreeListCapacity) {
 
         if constexpr (
-            alignof(Task) >
-            __STDCPP_DEFAULT_NEW_ALIGNMENT__) {
+            alignof(Task)
+            > __STDCPP_DEFAULT_NEW_ALIGNMENT__) {
 
             ::operator delete(
                 static_cast<void*>(
@@ -442,17 +427,17 @@ void WorkStealingQueue::releaseNode(
     freeHead_ =
         freeNode;
 
-
     ++freeCount_;
 }
 
 
 // ============================================================
-// Capacity
+// Size
 // ============================================================
 
 std::size_t
-WorkStealingQueue::size() const noexcept {
+WorkStealingQueue::size()
+    const noexcept {
 
     const std::size_t bottom =
         bottomIndex_.load(

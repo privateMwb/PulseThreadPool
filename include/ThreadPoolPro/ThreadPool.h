@@ -1,17 +1,9 @@
 /**
- * @file            ThreadPool.h
+ * @file ThreadPool.h
+ * @brief High-performance work-stealing thread pool.
  *
- * @date            2026-07-25
- *
- * @version         2.1.0
- *
- * @copyright       Copyright (c) 2026 Your Name
- *                  All rights reserved.
- *                  https://github.com/yourname/PulseThreadPool
- *
- * @attention       This source is released under the MIT license
- *                  SPDX-License-Identifier: MIT
- *                  <http://opensource.org/licenses/MIT>
+ * Copyright (c) 2026
+ * SPDX-License-Identifier: MIT
  */
 
 #pragma once
@@ -46,48 +38,33 @@ class ThreadPool {
     using Task = Detail::Task;
     using WorkQueue = Detail::WorkStealingQueue;
 
-    enum class RunState : int {
+    enum class RunState : std::uint8_t {
         Running = 0,
         ShuttingDownFinish = 1,
-        ShuttingDownDiscard = 2,
+        ShuttingDownDiscard = 2
     };
 
     /*
-     * Maximum number of victims a worker probes during one failed
-     * steal round.
+     * Number of workers probed during a steal attempt.
      *
-     * The old implementation scanned every worker:
-     *
-     *     O(workerCount)
-     *
-     * for every failed fetch.
-     *
-     * At 32 workers this produced a huge amount of failed CAS/fence
-     * traffic. A bounded probe keeps the scheduler cost approximately
-     * constant as the pool grows.
+     * Full O(N) scans become extremely expensive with 16/32/64
+     * workers. A bounded probe keeps stealing approximately O(1).
      */
-    static constexpr std::size_t MaxStealAttempts = 4;
+    static constexpr std::size_t MaxStealProbes = 4;
 
     /*
-     * Number of tasks moved from an injection queue into a worker's
-     * local queue during one refill.
+     * Number of injection shards probed in a single fetch attempt.
      *
-     * This amortizes the injection-shard mutex acquisition.
+     * A worker that fails to find work will retry later anyway, so
+     * scanning every shard here is wasted work.
      */
-    static constexpr std::size_t InjectionBatchSize = 32;
+    static constexpr std::size_t MaxInjectionProbes = 4;
 
     /*
-     * Keep the number of injection shards bounded.
-     *
-     * Too few shards creates producer contention.
-     * Too many shards make every failed consumer scan expensive.
-     *
-     * 16 is enough to spread external producers on most systems,
-     * while the upper bound prevents 32/64/128-worker pools from
-     * creating unnecessarily large injection queues.
+     * Number of times an external waitIdle() caller helps before
+     * yielding to the workers.
      */
-    static constexpr std::size_t MinInjectionShards = 4;
-    static constexpr std::size_t MaxInjectionShards = 16;
+    static constexpr std::size_t MaxExternalHelpAttempts = 8;
 
     struct alignas(Detail::CacheLineSize) Worker {
         WorkQueue queue_;
@@ -99,6 +76,12 @@ class ThreadPool {
     std::size_t workerCount_;
     std::vector<Worker> workers_;
 
+    /*
+     * Injection queues are used only by non-worker producers.
+     *
+     * The one-worker case gets a dedicated single queue because
+     * sharding is strictly counterproductive there.
+     */
     struct alignas(Detail::CacheLineSize) InjectionShard {
         std::mutex mutex_;
         std::deque<Task> queue_;
@@ -108,54 +91,52 @@ class ThreadPool {
     std::size_t injectionShardCount_;
     std::vector<InjectionShard> injectionShards_;
 
-    /*
-     * Producer-side round robin.
-     *
-     * Relaxed ordering is sufficient. This is only used to distribute
-     * submissions; it is not used for synchronization.
-     */
-    alignas(Detail::CacheLineSize)
-        std::atomic<std::size_t> injectionRoundRobin_;
+    std::atomic<std::size_t> injectionRoundRobin_{0};
 
     /*
-     * Fast global hint:
+     * Wake generation.
      *
-     *     0 -> no task is currently believed to be in injection queues
-     *    >0 -> at least one task may be available
-     *
-     * This lets workers completely skip the O(shardCount) injection
-     * scan in the overwhelmingly common empty-injection case.
+     * This is not a task counter. It only exists to avoid sleeping
+     * forever when work/state changes.
      */
     alignas(Detail::CacheLineSize)
-        std::atomic<std::size_t> injectionTasks_;
+    std::atomic<std::uint32_t> wakeToken_{0};
+
+    alignas(Detail::CacheLineSize)
+    std::atomic<RunState> runState_{RunState::Running};
+
+    alignas(Detail::CacheLineSize)
+    std::atomic<bool> paused_{false};
 
     /*
-     * Number of tasks that have been submitted but have not yet started.
+     * Number of tasks currently executing.
      */
     alignas(Detail::CacheLineSize)
-        std::atomic<std::size_t> pendingTasks_;
+    std::atomic<std::size_t> activeTasks_{0};
+
+    /*
+     * Number of tasks submitted but not yet started.
+     */
+    alignas(Detail::CacheLineSize)
+    std::atomic<std::size_t> pendingTasks_{0};
 
     alignas(Detail::CacheLineSize)
-        std::atomic<std::uint32_t> wakeToken_;
+    std::atomic<std::size_t> exceptionCounter_{0};
 
     alignas(Detail::CacheLineSize)
-        std::atomic<RunState> runState_;
+    std::atomic<std::size_t> idleWorkers_{0};
 
+    /*
+     * Number of external threads currently waiting in waitIdle().
+     */
     alignas(Detail::CacheLineSize)
-        std::atomic<bool> paused_;
+    std::atomic<std::size_t> waitIdleWaiters_{0};
 
-    alignas(Detail::CacheLineSize)
-        std::atomic<std::size_t> activeTasks_;
-
-    alignas(Detail::CacheLineSize)
-        std::atomic<std::size_t> exceptionCounter_;
-
-    alignas(Detail::CacheLineSize)
-        std::atomic<std::size_t> idleWorkers_;
-
-    alignas(Detail::CacheLineSize)
-        std::atomic<std::size_t> waitIdleWaiters_;
-
+    /*
+     * Worker-local TLS.
+     *
+     * A worker submitting work to itself bypasses all injection locks.
+     */
     static thread_local Worker* currentWorker_;
     static thread_local std::size_t currentWorkerIndex_;
     static thread_local bool selfDetachRequested_;
@@ -223,21 +204,6 @@ class ThreadPool {
     [[nodiscard]]
     std::optional<Task>
     fetchTaskExternal();
-
-    /*
-     * Attempts to refill a worker's local queue from the injection
-     * queues.
-     *
-     * Returns true if at least one task was moved.
-     */
-    bool refillLocalQueue(std::size_t workerIndex);
-
-    /*
-     * Attempts to drain one injection shard into a worker's local queue.
-     */
-    bool drainInjectionShard(
-        std::size_t workerIndex,
-        std::size_t shardIndex);
 
     void submit(Task&& task);
 
