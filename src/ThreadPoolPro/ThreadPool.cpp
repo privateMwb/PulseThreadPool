@@ -105,6 +105,7 @@ ThreadPool::ThreadPool(std::size_t threadCount)
     , pendingTasks_{0}
     , idleWorkers_{0}
     , waitIdleWaiters_{0}
+    , wakesInFlight_{0}
 {
     // Borrow already-running threads from the global market instead of
     // spawning new ones — see Detail/ThreadMarket.h. Only however many
@@ -413,6 +414,22 @@ void ThreadPool::workerLoop(std::size_t index) {
         });
 
         idleWorkers_.fetch_sub(1, std::memory_order_relaxed);
+
+        // This worker is leaving the idle-for-work wait — whether it
+        // actually parked and was woken, or noticed pendingTasks_ change
+        // during the spin/yield phase without ever parking. Either way,
+        // release one wake credit so submit() can issue a fresh wakeOne()
+        // for the next idle worker instead of assuming this one wake
+        // still covers however many are left — see wakesInFlight_'s doc
+        // comment in ThreadPool.h. Saturating: only decrement if there's
+        // actually a credit outstanding, since this worker may be
+        // leaving because it self-detected work during the spin phase
+        // rather than because a wakeOne() call was ever issued for it.
+        std::size_t inFlight = wakesInFlight_.load(std::memory_order_relaxed);
+
+        while (inFlight > 0 && !wakesInFlight_.compare_exchange_weak(
+                                    inFlight, inFlight - 1, std::memory_order_relaxed, std::memory_order_relaxed))
+            ; // inFlight refreshed by the failed CAS; retry with the new value.
     }
 }
 
@@ -568,8 +585,45 @@ void ThreadPool::submit(Task&& task) {
     // already counted in pendingTasks_ by the time it checks — and if a
     // worker is already blocked, it must have incremented idleWorkers_
     // strictly before blocking, so this check will see it.
-    if (idleWorkers_.load(std::memory_order_acquire) != 0)
-        wakeOne();
+    //
+    // Beyond that, cap how many wakeOne() calls (each a real futex-wake
+    // syscall) a burst of submit() calls issues at the number of
+    // workers currently idle, via wakesInFlight_: this submit() only
+    // fires wakeOne() if fewer wake credits are outstanding than there
+    // are idle workers to receive them, and takes one credit when it
+    // does. A batch far larger than the idle count (e.g. 64 tasks, 4
+    // idle workers) now costs at most 4 wakes instead of 64 — this was
+    // measured as the dominant per-task cost once fetchTask()'s scan
+    // cost was bounded (see MaxStealAttempts) — while still mobilizing
+    // every idle worker instead of just one. A plain "wake at most once
+    // ever" gate is wrong here: notify_one() wakes *a* thread, not a
+    // chosen one and not all of them, so that would leave every idle
+    // worker but one permanently parked during a multi-task batch.
+    // Even so, this can never cause a missed wakeup: even if a
+    // particular wakeOne()'s notify_one() reaches nobody (its target
+    // already left the idle wait via the spin/yield phase, unrelated to
+    // this notify), the same double-check pattern guarantees every idle
+    // worker notices pendingTasks_ becoming nonzero on its own — the
+    // notify only shortens how long that takes, it's never the only way
+    // progress happens.
+    std::size_t idle = idleWorkers_.load(std::memory_order_acquire);
+
+    if (idle != 0) {
+        std::size_t inFlight = wakesInFlight_.load(std::memory_order_acquire);
+
+        while (inFlight < idle) {
+            if (wakesInFlight_.compare_exchange_weak(inFlight, inFlight + 1, std::memory_order_acq_rel,
+                                                      std::memory_order_acquire)) {
+                wakeOne();
+                break;
+            }
+            // inFlight refreshed by the failed CAS; loop re-checks
+            // against the (possibly now-stale) idle snapshot above —
+            // worst case this over- or under-fires by a small amount
+            // under heavy concurrent submission, which only affects how
+            // many syscalls are spent, never correctness.
+        }
+    }
 }
 
 

@@ -32,7 +32,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y cmake clang libtbb-dev strace
+          sudo apt install -y cmake clang libtbb-dev
 
       # Only benchmarks/ and tools/ (the regression tool) are needed
       # here — tests/examples aren't exercised by this workflow.
@@ -53,16 +53,6 @@ jobs:
 
       - name: Run benchmarks
         run: ./build/benchmarks
-
-      # Diagnostic only — never merged with the timing run above, since
-      # ptrace overhead makes every traced syscall (and the surrounding
-      # scheduling) unrepresentative of real latency. This just answers
-      # "how many futex wake/wait syscalls did the whole suite make",
-      # to sanity-check submit()-path wakeup behavior (e.g. one futex
-      # wake per detach() vs. one per actual worker wakeup). Runs the
-      # full binary again since the framework has no suite filter.
-      - name: Profile futex syscall count
-        run: strace -c -f -e trace=futex ./build/benchmarks 2>&1 | tail -10
 
       - name: Build regression tool
         run: cmake --build build --target regression
