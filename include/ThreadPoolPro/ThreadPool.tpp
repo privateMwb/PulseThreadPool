@@ -17,12 +17,8 @@ namespace ThreadPoolPro {
 // enqueue()
 // ============================================================
 
-template <
-    typename F,
-    typename... Args>
-auto ThreadPool::enqueue(
-    F&& task,
-    Args&&... args)
+template <typename F, typename... Args>
+auto ThreadPool::enqueue(F&& task, Args&&... args)
     -> Detail::Future<
         std::invoke_result_t<
             std::decay_t<F>,
@@ -33,62 +29,46 @@ auto ThreadPool::enqueue(
             std::decay_t<F>,
             std::decay_t<Args>...>;
 
+    using State =
+        Detail::ResultState<Result>;
 
-    /*
-     * Future creates the shared result state.
-     *
-     * The exact Future interface is delegated to Detail::Future.
-     */
+    // The Future constructor shown by your compiler requires:
+    //
+    //     Future(ResultState<T>*)
+    //
+    // Therefore the state must be allocated separately and the
+    // Future receives the raw ResultState pointer.
+    //
+    // The ResultState itself must remain alive until both the Future
+    // and the executing task have released their references.
     auto state =
-        std::make_shared<
-            Detail::Future<Result>>();
+        std::make_shared<State>();
 
+    Detail::Future<Result> future{
+        state.get()
+    };
 
-    Detail::Future<Result>
-        future{
-            state
-        };
-
-
-    /*
-     * Capture the callable and arguments exactly once.
-     *
-     * The lambda itself becomes the Task's callable.
-     */
-    auto callable =
-        [
-            state,
-            fn =
-                std::decay_t<F>(
-                    std::forward<F>(
-                        task)),
-            argsTuple =
-                std::make_tuple(
-                    std::forward<Args>(
-                        args)...)
-        ]() mutable {
+    auto boundTask =
+        [fn = std::forward<F>(task),
+         arguments =
+             std::make_tuple(
+                 std::forward<Args>(args)...),
+         state]() mutable {
 
             try {
 
                 if constexpr (
-                    std::is_void_v<
-                        Result>) {
+                    std::is_void_v<Result>) {
 
                     std::apply(
-                        [&fn](
-                            auto&&... unpacked) {
-
+                        [&fn](auto&&... unpacked) mutable {
                             std::invoke(
-                                fn,
+                                std::move(fn),
                                 std::forward<
-                                    decltype(
-                                        unpacked)>(
+                                    decltype(unpacked)>(
                                     unpacked)...);
-
                         },
-                        std::move(
-                            argsTuple));
-
+                        std::move(arguments));
 
                     state->setValue();
 
@@ -96,25 +76,19 @@ auto ThreadPool::enqueue(
 
                     Result result =
                         std::apply(
-                            [&fn](
-                                auto&&... unpacked)
+                            [&fn](auto&&... unpacked) mutable
                                 -> Result {
 
                                 return std::invoke(
-                                    fn,
+                                    std::move(fn),
                                     std::forward<
-                                        decltype(
-                                            unpacked)>(
+                                        decltype(unpacked)>(
                                         unpacked)...);
-
                             },
-                            std::move(
-                                argsTuple));
-
+                            std::move(arguments));
 
                     state->setValue(
-                        std::move(
-                            result));
+                        std::move(result));
                 }
 
             } catch (...) {
@@ -124,18 +98,12 @@ auto ThreadPool::enqueue(
             }
         };
 
-
-    /*
-     * Construct exactly one Task.
-     */
     submit(
         Task{
-            std::move(
-                callable)
+            std::move(boundTask)
         });
 
-
-    return std::move(future);
+    return future;
 }
 
 
