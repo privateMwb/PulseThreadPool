@@ -2,43 +2,43 @@
   {
     "suite": "Detach",
     "operation": "detach single task",
-    "total_ns": 4419000,
+    "total_ns": 5779000,
     "iterations": 10000,
-    "ns_per_op": 441.90
+    "ns_per_op": 577.90
   },
   {
     "suite": "Detach",
     "operation": "detach single task",
-    "total_ns": 48180000,
+    "total_ns": 50650538,
     "iterations": 100000,
-    "ns_per_op": 481.80
+    "ns_per_op": 506.51
   },
   {
     "suite": "Detach",
     "operation": "detach single task",
-    "total_ns": 440663692,
+    "total_ns": 518677154,
     "iterations": 1000000,
-    "ns_per_op": 440.66
+    "ns_per_op": 518.68
   },
   {
     "suite": "Detach",
     "operation": "detach batch + drain (64 tasks)",
-    "total_ns": 651916385,
+    "total_ns": 441954154,
     "iterations": 10000,
-    "ns_per_op": 65191.64
+    "ns_per_op": 44195.42
   },
   {
     "suite": "Detach",
     "operation": "detach batch + drain (64 tasks)",
-    "total_ns": 6761216000,
+    "total_ns": 4331641846,
     "iterations": 100000,
-    "ns_per_op": 67612.16
+    "ns_per_op": 43316.42
   },
   {
     "suite": "Detach",
     "operation": "detach batch + drain (64 tasks)",
-    "total_ns": 131489577777,
+    "total_ns": 119361523699,
     "iterations": 1000000,
-    "ns_per_op": 131489.58
+    "ns_per_op": 119361.52
   }
 ]
