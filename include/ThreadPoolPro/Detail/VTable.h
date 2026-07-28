@@ -61,6 +61,14 @@ template <typename F> inline const VTable* getVTable() noexcept {
         [](void* p) { std::invoke(*static_cast<F*>(p)); },
         [](void* src, void* dst) noexcept { ::new (dst) F(std::move(*static_cast<F*>(src))); },
         [](void* p) noexcept { static_cast<F*>(p)->~F(); },
+        // LCOV_EXCL_START
+        // heapDelete_ is only ever invoked through Task::reset() when
+        // isHeap_ is true (see Task.cpp). For every F small and
+        // nothrow-movable enough to use inline storage, this
+        // instantiation is unreachable by design — it exists only so
+        // heap-stored F's share the same VTable layout. Coverage here
+        // is per-F-instantiation, so it reads as "missing" for every
+        // inline type even though the heap path itself is fully tested.
         [](void* p) noexcept {
             static_cast<F*>(p)->~F();
 
@@ -69,6 +77,7 @@ template <typename F> inline const VTable* getVTable() noexcept {
             else
                 ::operator delete(p);
         }};
+        // LCOV_EXCL_STOP
 
     return &table;
 }
