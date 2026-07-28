@@ -15,7 +15,7 @@ class Conan(ConanFile):
     version = "1.0.0"
 
     url = "https://github.com/privateMwb/ThreadPoolPro"
-    description = "Header-only, work-stealing C++ thread pool with lock-free per-worker queues, type-erased SBO task storage, and a lightweight Future replacing std::packaged_task/std::future."
+    description = "Work-stealing C++ thread pool with lock-free per-worker queues, type-erased SBO task storage, and a lightweight Future replacing std::packaged_task/std::future."
     topics = (
         "threadpool",
         "work-stealing",
@@ -26,12 +26,12 @@ class Conan(ConanFile):
     
     # ──────────────────────────────────────────────────────────────
 
-    # header-library, not "library": there's no compiled src/ThreadPoolPro/*.cpp
-    # today, so CMakeLists.txt's auto-detect builds an INTERFACE target.
-    # NOTE: if this library ever grows compiled sources, this recipe needs
-    # to switch back to "library" and package_id()/cpp_info.libs need to
-    # become conditional again, mirroring CMakeLists.txt's own auto-detect.
-    package_type = "header-library"
+    # library, not "header-library": src/ThreadPoolPro/*.cpp now exist
+    # and compile to a real static lib (see CMakeLists.txt's auto-detect)
+    # — this must track that, or CMakeDeps generates an INTERFACE target
+    # with nothing to link, and consumers fail at link time even though
+    # headers resolve fine.
+    package_type = "library"
 
     license = "MIT"
     author = "privateMwb"
@@ -66,10 +66,9 @@ class Conan(ConanFile):
     def layout(self):
         cmake_layout(self)
 
-    def package_id(self):
-        # Header-only: no compiled ABI, so one package serves every
-        # compiler/arch/build_type combination.
-        self.info.clear()
+    # No package_id() override: this is a compiled static library now,
+    # so (unlike header-only) each settings/options combination needs
+    # its own package id — the default behavior is correct here.
 
     def validate(self):
         check_min_cppstd(self, 23)
@@ -114,5 +113,4 @@ class Conan(ConanFile):
     def package_info(self):
         self.cpp_info.set_property("cmake_file_name", self.cmake_name)
         self.cpp_info.set_property("cmake_target_name", f"{self.cmake_name}::{self.cmake_name}")
-        self.cpp_info.bindirs = []
-        self.cpp_info.libdirs = []
+        self.cpp_info.libs = [self.cmake_name]
