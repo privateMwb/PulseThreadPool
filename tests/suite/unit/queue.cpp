@@ -94,8 +94,12 @@ static void size_tracks_push_and_pop() {
     queue.pushBottom(Task([]() {}));
     CHK(queue.size() == 2);
 
-    (void)queue.popBottom();
+    auto popped = queue.popBottom();
     CHK(queue.size() == 1);
+    (*popped)();
+
+    auto remaining = queue.popBottom();
+    (*remaining)();
 }
 
 // Verifies size() shrinks with steal() too.
@@ -103,8 +107,13 @@ static void size_tracks_steal() {
     WorkStealingQueue queue;
     queue.pushBottom(Task([]() {}));
     queue.pushBottom(Task([]() {}));
-    (void)queue.steal();
+
+    auto stolen = queue.steal();
     CHK(queue.size() == 1);
+    (*stolen)();
+
+    auto remaining = queue.popBottom();
+    (*remaining)();
 }
 
 // Executes all WorkStealingQueue test cases.
