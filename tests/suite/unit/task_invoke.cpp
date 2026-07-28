@@ -13,7 +13,8 @@ using namespace ThreadPoolPro::Detail;
 static void invoke_runs_callable() {
     bool ran = false;
     Task task([&ran]() { ran = true; });
-    task();
+    Task moved(std::move(task));
+    moved();
     CHK(ran);
 }
 
@@ -30,6 +31,9 @@ static void bool_conversion_reflects_state() {
 
     Task holding([]() {});
     CHK(static_cast<bool>(holding));
+
+    Task moved(std::move(holding));
+    moved();
 }
 
 // Executes all Task invocation test cases.

@@ -12,7 +12,8 @@ using namespace ThreadPoolPro::Detail;
 static void construct_small_callable_invokes() {
     bool ran = false;
     Task task([&ran]() { ran = true; });
-    task();
+    Task moved(std::move(task));
+    moved();
     CHK(ran);
 }
 
