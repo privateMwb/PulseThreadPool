@@ -49,9 +49,10 @@ struct VTableSmallCallable {
     }
 };
 
-// Padded well past Task's inline capacity. Never moved here — this
-// test only exercises the heap-delete path, which is all a heap-stored
-// F ever needs from VTable.
+// Padded well past Task's inline capacity. This test only exercises
+// the heap-delete path — moveTo_ is never called on it — but F must
+// still be move-constructible, since getVTable<F>() compiles all four
+// operations for every F regardless of which ones a given test uses.
 struct VTableLargeCallable {
     int* invokes;
     int* destructions;
@@ -59,7 +60,12 @@ struct VTableLargeCallable {
 
     VTableLargeCallable(int* i, int* d) noexcept : invokes{i}, destructions{d} {}
 
-    VTableLargeCallable(VTableLargeCallable&&) = delete;
+    VTableLargeCallable(VTableLargeCallable&& other) noexcept
+        : invokes{other.invokes}, destructions{other.destructions} {
+        other.invokes = nullptr;
+        other.destructions = nullptr;
+    }
+
     VTableLargeCallable(const VTableLargeCallable&) = delete;
 
     ~VTableLargeCallable() {
