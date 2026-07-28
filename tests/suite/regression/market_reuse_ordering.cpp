@@ -25,9 +25,11 @@ static void rapid_pool_cycles_stay_fast() {
     // Warm the market up first so the timed loop below starts from an
     // already-populated idle pool, isolating reuse speed from the
     // one-time cost of spawning the very first threads.
+    // clang-format off
     {
         ThreadPool warmup(4);
     }
+    // clang-format on
 
     auto start = std::chrono::steady_clock::now();
 

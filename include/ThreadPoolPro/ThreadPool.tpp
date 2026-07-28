@@ -63,10 +63,12 @@ auto ThreadPool::enqueue(F&& f, Args&&... args)
         submit(Task(std::move(runAndPublish)));
     } catch (...) {
         // submit() (or Task's own construction) threw before the task
-        // was ever queued — that closure will never run, so its share
-        // of `state` must be released here instead, or the Future's
-        // eventual release() would be the only one of the two owners
-        // to ever fire and `state` would leak.
+        // was ever queued, and we're about to throw out of enqueue()
+        // itself — so neither of state's two owners will ever exist to
+        // release their share: the closure was destroyed with the Task
+        // without running, and the Future below is never constructed.
+        // Release both shares here or `state` leaks.
+        state->release();
         state->release();
         throw;
     }
