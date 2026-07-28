@@ -5,6 +5,9 @@
 //   inline-sized callable
 // - invoke_ and heapDelete_ correctly destroy and free a large,
 //   heap-sized callable
+// - moveTo_ and destroy_ also round-trip correctly for the large
+//   callable, even though Task itself never calls them on a
+//   heap-stored F
 //
 // These drive VTable's function pointers directly rather than through
 // Task, since Task only ever calls moveTo_/destroy_ for inline-stored
@@ -49,10 +52,9 @@ struct VTableSmallCallable {
     }
 };
 
-// Padded well past Task's inline capacity. This test only exercises
-// the heap-delete path — moveTo_ is never called on it — but F must
-// still be move-constructible, since getVTable<F>() compiles all four
-// operations for every F regardless of which ones a given test uses.
+// Padded well past Task's inline capacity. Move-constructible because
+// getVTable<F>() compiles all four operations for every F regardless
+// of which ones a given test uses.
 struct VTableLargeCallable {
     int* invokes;
     int* destructions;
@@ -128,10 +130,38 @@ static void large_type_heap_delete_frees_callable() {
     CHK(destructions == 1);
 }
 
+// Verifies moveTo_ and destroy_ also round-trip correctly for the
+// large callable — Task itself never calls these for a heap-stored F,
+// but VTable's operations are independent of storage strategy, and
+// this closes the gap left by the type only ever being invoked/
+// heap-deleted elsewhere.
+static void large_type_move_and_destroy() {
+    int invokes = 0;
+    int destructions = 0;
+
+    alignas(std::max_align_t) std::byte src[sizeof(VTableLargeCallable)];
+    alignas(std::max_align_t) std::byte dst[sizeof(VTableLargeCallable)];
+
+    ::new (static_cast<void*>(src)) VTableLargeCallable(&invokes, &destructions);
+
+    const VTable* vtable = getVTable<VTableLargeCallable>();
+
+    vtable->moveTo_(src, dst);
+    vtable->destroy_(src);
+    CHK(destructions == 1); // only the moved-from husk destructed so far
+
+    vtable->invoke_(dst);
+    CHK(invokes == 1);
+
+    vtable->destroy_(dst);
+    CHK(destructions == 2);
+}
+
 // Executes all VTable operation test cases.
 static void run_tests() {
     RUN(small_type_operations_round_trip);
     RUN(large_type_heap_delete_frees_callable);
+    RUN(large_type_move_and_destroy);
 }
 
 REGISTER_TEST_SUITE();
