@@ -50,13 +50,9 @@ overrides below can be dropped entirely off-device.
   (already baked into `conanfile.py`'s `build()` and `portfile.cmake`'s
   `vcpkg_cmake_configure`, but relevant if configuring manually).
 
-- **The release tarball extracts to `LRUCache-<version>`, not
-  `ThreadPoolPro-<version>`** — the GitHub repo is `LRUCache`; the CMake
-  project/library target inside it is `ThreadPoolPro`. `cd` into whatever
-  the tarball actually produced, not the library name. If you don't
-  have a published release yet, use the local repo checkout directly
-  instead (see step 1 below) — no need to cut a release just to verify
-  packaging still works.
+- **If you don't have a published release yet**, use the local repo
+  checkout directly instead (see step 1 below) — no need to cut a
+  release just to verify packaging still works.
 
 - **`CMAKE_BUILD_TYPE` matters even without a toolchain file** —
   Conan's `CMakeDeps`-generated `INTERFACE_INCLUDE_DIRECTORIES` are
@@ -127,7 +123,7 @@ echo "Exit code: $?"
 ```
 
 A clean run prints `Exit code: 0` and nothing else — the consumer
-just default-constructs a `ThreadPoolPro::LRUCache` and returns, so success
+just default-constructs a `ThreadPoolPro::ThreadPool` and returns, so success
 already confirms the header parsed, the library linked, and the
 symbols resolved.
 

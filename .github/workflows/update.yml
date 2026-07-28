@@ -25,7 +25,7 @@ jobs:
 
     env:
       PACKAGE_NAME: threadpoolpro
-      REPOSITORY: privateMwb/LRUCache
+      REPOSITORY: privateMwb/ThreadPoolPro
       ROOT_DIR: .
       CONAN_RECIPE_DIR: packaging/recipes/threadpoolpro/all
       VCPKG_PORT_DIR: packaging/vcpkg/ports/threadpoolpro
