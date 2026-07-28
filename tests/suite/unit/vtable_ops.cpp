@@ -36,7 +36,8 @@ struct VTableSmallCallable {
     VTableSmallCallable(VTableSmallCallable&& other) noexcept
         : invokes{other.invokes}, destructions{other.destructions} {
         other.invokes = nullptr;
-        other.destructions = nullptr;
+        // destructions intentionally left wired: the moved-from husk
+        // still gets destructed and must report that.
     }
 
     VTableSmallCallable(const VTableSmallCallable&) = delete;
@@ -65,7 +66,8 @@ struct VTableLargeCallable {
     VTableLargeCallable(VTableLargeCallable&& other) noexcept
         : invokes{other.invokes}, destructions{other.destructions} {
         other.invokes = nullptr;
-        other.destructions = nullptr;
+        // destructions intentionally left wired: the moved-from husk
+        // still gets destructed and must report that.
     }
 
     VTableLargeCallable(const VTableLargeCallable&) = delete;

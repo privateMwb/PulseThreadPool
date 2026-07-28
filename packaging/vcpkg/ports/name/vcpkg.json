@@ -1,8 +1,8 @@
 {
   "name": "threadpoolpro",
   "version": "1.0.0",
-  "description": "High-performance, header-only LRU cache with O(1) get/put/evict, backed by a pool-allocated intrusive list and hash table.",
-  "homepage": "https://github.com/privateMwb/LRUCache",
+  "description": "Header-only, work-stealing C++ thread pool with lock-free per-worker queues, type-erased SBO task storage, and a lightweight Future replacing std::packaged_task/std::future.",
+  "homepage": "https://github.com/privateMwb/ThreadPoolPro",
   "license": "MIT",
   "dependencies": [
     "vcpkg-cmake",

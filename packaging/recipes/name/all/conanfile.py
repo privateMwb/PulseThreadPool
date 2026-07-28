@@ -14,15 +14,16 @@ class Conan(ConanFile):
     cmake_name = "ThreadPoolPro"  # matches project()'s name in the top-level CMakeLists.txt
     version = "1.0.0"
 
-    url = "https://github.com/privateMwb/LRUCache"
-    description = "High-performance, header-only LRU cache with O(1) get/put/evict, backed by a pool-allocated intrusive list and hash table."
+    url = "https://github.com/privateMwb/ThreadPoolPro"
+    description = "Header-only, work-stealing C++ thread pool with lock-free per-worker queues, type-erased SBO task storage, and a lightweight Future replacing std::packaged_task/std::future."
     topics = (
-        "cache",
-        "lru",
-        "lru-cache",
+        "threadpool",
+        "work-stealing",
+        "concurrency",
         "cpp",
-        "data-structure",
+        "lock-free",
     )
+    
     # ──────────────────────────────────────────────────────────────
 
     # header-library, not "library": there's no compiled src/ThreadPoolPro/*.cpp

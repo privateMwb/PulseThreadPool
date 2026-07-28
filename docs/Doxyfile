@@ -11,11 +11,11 @@
 # ============================================================
 
 PROJECT_NAME            = "ThreadPoolPro"
-PROJECT_BRIEF           = "High-performance, header-only LRU cache with O(1) get/put/evict, backed by a pool-allocated intrusive list and hash table."
+PROJECT_BRIEF           = "Header-only, work-stealing C++ thread pool with lock-free per-worker queues, type-erased SBO task storage, and a lightweight Future replacing std::packaged_task/std::future."
 
 OUTPUT_DIRECTORY        = .
 
-INPUT                   = ../include ../README.md
+INPUT                   = ../include ../src ../README.md
 USE_MDFILE_AS_MAINPAGE  = ../README.md
 FILE_PATTERNS           = *.h *.tpp *.cpp
 RECURSIVE               = YES

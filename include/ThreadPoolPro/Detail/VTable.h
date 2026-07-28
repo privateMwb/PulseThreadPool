@@ -77,7 +77,7 @@ template <typename F> inline const VTable* getVTable() noexcept {
             else
                 ::operator delete(p);
         }};
-        // LCOV_EXCL_STOP
+    // LCOV_EXCL_STOP
 
     return &table;
 }

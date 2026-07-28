@@ -37,7 +37,8 @@ static void steal_drains_unevenly_loaded_worker() {
                 // is deterministically exercised instead of the
                 // assertion depending on OS scheduling luck.
                 std::atomic<int> spin{0};
-                while (spin.fetch_add(1, std::memory_order_relaxed) < 2000) {}
+                while (spin.fetch_add(1, std::memory_order_relaxed) < 2000) {
+                }
 
                 {
                     std::lock_guard<std::mutex> lock(idsMutex);

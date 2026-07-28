@@ -14,9 +14,15 @@
 using namespace ThreadPoolPro;
 
 namespace {
-int parseStage(int raw) { return raw + 1; }
-int transformStage(int parsed) { return parsed * parsed; }
-std::string formatStage(int transformed) { return "result=" + std::to_string(transformed); }
+int parseStage(int raw) {
+    return raw + 1;
+}
+int transformStage(int parsed) {
+    return parsed * parsed;
+}
+std::string formatStage(int transformed) {
+    return "result=" + std::to_string(transformed);
+}
 } // namespace
 
 static void run_examples() {

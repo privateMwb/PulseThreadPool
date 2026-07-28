@@ -29,8 +29,8 @@ static void run_examples() {
         futures.push_back(pool.enqueue([](int i) { return i * i; }, i));
     }
 
-    std::cout << "submitted " << itemCount << " items across "
-              << pool.threadCount() << " threads\n\n";
+    std::cout << "submitted " << itemCount << " items across " << pool.threadCount()
+              << " threads\n\n";
 
     // Collecting is a second, separate pass — order is preserved
     // because futures[i] always corresponds to item i.

@@ -5,12 +5,12 @@
 // package is installable and linkable, not that its behavior is
 // correct. Expand this to parse a small literal and check the result
 // once filled in for a real project.
-#include <ThreadPoolPro/LRUCache.h>
+#include <ThreadPoolPro/ThreadPool.h>
 
 #include <iostream>
 
 int main() {
-    rain::LRUCache<std::string, int> cache(3);
+    rain::ThreadPool pool(4);
     std::cout << "ThreadPoolPro linked and constructed successfully.\n";
     return 0;
 }

@@ -26,7 +26,7 @@ static void many_way_shutdown_race_resolves_cleanly() {
         std::vector<std::thread> racers;
         for (int r = 0; r < racerCount; ++r) {
             auto mode = (r % 2 == 0) ? ThreadPool::ShutdownMode::FinishTasks
-                                      : ThreadPool::ShutdownMode::DiscardTasks;
+                                     : ThreadPool::ShutdownMode::DiscardTasks;
             racers.emplace_back([&pool, mode]() { pool.shutdown(mode); });
         }
 

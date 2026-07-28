@@ -26,20 +26,15 @@
 
 namespace ThreadPoolPro::Detail {
 
-
 // ============================================================
 //  Section 1 — Constructors
 // ============================================================
 
 Buffer::Buffer(std::size_t capacity)
-    : capacity_{capacity}
-    , mask_{capacity - 1}
-    , tasks_{std::make_unique<Task*[]>(capacity)}
-{
+    : capacity_{capacity}, mask_{capacity - 1}, tasks_{std::make_unique<Task*[]>(capacity)} {
     assert(capacity_ > 0);
     assert(std::has_single_bit(capacity_));
 }
-
 
 // ============================================================
 //  Section 2 — Element Access
@@ -48,7 +43,6 @@ Buffer::Buffer(std::size_t capacity)
 Task*& Buffer::at(std::size_t index) noexcept {
     return tasks_[index & mask_];
 }
-
 
 // ============================================================
 //  Section 3 — Buffer Growth

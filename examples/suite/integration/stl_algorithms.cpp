@@ -29,9 +29,8 @@ void parallelTransform(ThreadPool& pool, It first, It last, OutIt outFirst, Unar
         if (begin >= end)
             break;
 
-        futures.push_back(pool.enqueue([=] {
-            std::transform(first + begin, first + end, outFirst + begin, op);
-        }));
+        futures.push_back(pool.enqueue(
+            [=] { std::transform(first + begin, first + end, outFirst + begin, op); }));
     }
 
     for (auto& f : futures) {
@@ -53,8 +52,9 @@ std::size_t parallelCountIf(ThreadPool& pool, It first, It last, Predicate pred)
         if (begin >= end)
             break;
 
-        futures.push_back(pool.enqueue(
-            [=] { return static_cast<std::size_t>(std::count_if(first + begin, first + end, pred)); }));
+        futures.push_back(pool.enqueue([=] {
+            return static_cast<std::size_t>(std::count_if(first + begin, first + end, pred));
+        }));
     }
 
     std::size_t total = 0;
@@ -78,7 +78,7 @@ static void run_examples() {
 
     std::vector<int> output(input.size());
     parallelTransform(pool, input.begin(), input.end(), output.begin(),
-                       [](int v) { return v * v; });
+                      [](int v) { return v * v; });
 
     std::vector<int> expected(input.size());
     std::transform(input.begin(), input.end(), expected.begin(), [](int v) { return v * v; });
@@ -88,8 +88,8 @@ static void run_examples() {
     // Parallel count_if, reducing one std::size_t per chunk.
     setTitle("Parallel count_if");
 
-    std::size_t evenCount = parallelCountIf(pool, input.begin(), input.end(),
-                                             [](int v) { return v % 2 == 0; });
+    std::size_t evenCount =
+        parallelCountIf(pool, input.begin(), input.end(), [](int v) { return v % 2 == 0; });
 
     std::cout << "even numbers in [0, 1000): " << evenCount << "\n";
 }

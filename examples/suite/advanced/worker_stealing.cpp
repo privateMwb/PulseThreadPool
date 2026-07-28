@@ -53,8 +53,8 @@ static void run_examples() {
 
         std::cout << "completed: " << completed.load() << " / " << taskCount << "\n";
         std::cout << "elapsed  : "
-                   << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()
-                   << " ms\n\n";
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()
+                  << " ms\n\n";
     }
 
     // Same batch, one worker only — nothing to steal it away to, so
@@ -81,8 +81,8 @@ static void run_examples() {
 
         std::cout << "completed: " << completed.load() << " / " << taskCount << "\n";
         std::cout << "elapsed  : "
-                   << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()
-                   << " ms (expected roughly 4x the four-worker run)\n";
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()
+                  << " ms (expected roughly 4x the four-worker run)\n";
     }
 }
 

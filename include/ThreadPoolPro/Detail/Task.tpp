@@ -17,13 +17,11 @@
 
 namespace ThreadPoolPro::Detail {
 
-
 // ============================================================
 //  Section 1 — Constructors
 // ============================================================
 
-template <typename F>
-Task::Task(F&& f) {
+template <typename F> Task::Task(F&& f) {
     using Decayed = std::decay_t<F>;
 
     vtable_ = getVTable<Decayed>();

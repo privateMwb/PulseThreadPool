@@ -66,7 +66,7 @@ class ThreadPool {
   public:
     /// @brief Behavior of shutdown() with respect to already-queued tasks.
     enum class ShutdownMode {
-        FinishTasks,  ///< Run every already-queued task to completion before stopping.
+        FinishTasks, ///< Run every already-queued task to completion before stopping.
         DiscardTasks ///< Stop as soon as possible, discarding anything still queued.
     };
 

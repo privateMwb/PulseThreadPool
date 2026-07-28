@@ -44,7 +44,7 @@ auto ThreadPool::enqueue(F&& f, Args&&... args)
     State* state = new State();
 
     auto runAndPublish = [state, func = std::decay_t<F>(std::forward<F>(f)),
-                           argsTuple = std::make_tuple(std::forward<Args>(args)...)]() mutable {
+                          argsTuple = std::make_tuple(std::forward<Args>(args)...)]() mutable {
         try {
             if constexpr (std::is_void_v<ReturnType>) {
                 std::apply(std::move(func), std::move(argsTuple));
@@ -77,7 +77,6 @@ auto ThreadPool::enqueue(F&& f, Args&&... args)
 template <typename F> void ThreadPool::detach(F&& f) {
     submit(Task(std::decay_t<F>(std::forward<F>(f))));
 }
-
 
 // ============================================================
 //  Section 2 — Worker Synchronization

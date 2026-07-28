@@ -30,7 +30,7 @@ static void bench_detach_single() {
     auto otbb = [&] { arena.execute([&] { tg.run([] {}); }); };
 
     BENCH("detach single task", ptp, otbb);
-    
+
     arena.execute([&] { tg.wait(); });
 }
 

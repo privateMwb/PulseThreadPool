@@ -34,7 +34,9 @@ class MarketThread {
     MarketThread(const MarketThread&) = delete;
     MarketThread& operator=(const MarketThread&) = delete;
 
-    std::thread::id id() const noexcept { return id_; }
+    std::thread::id id() const noexcept {
+        return id_;
+    }
 
     /// @brief Assigns `job` to run on this thread. Caller must only
     /// call this while the thread is idle (fresh lease, or after a

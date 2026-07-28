@@ -126,7 +126,9 @@ template <> class ResultState<void> {
     ResultState(const ResultState&) = delete;
     ResultState& operator=(const ResultState&) = delete;
 
-    void setValue() noexcept { publish(); }
+    void setValue() noexcept {
+        publish();
+    }
 
     void setException(std::exception_ptr eptr) noexcept {
         exception_ = std::move(eptr);
@@ -194,7 +196,9 @@ template <typename T> class Future {
     /// by enqueue(); not intended to be constructed directly.
     explicit Future(ResultState<T>* state) noexcept : state_{state} {}
 
-    Future(Future&& other) noexcept : state_{other.state_} { other.state_ = nullptr; }
+    Future(Future&& other) noexcept : state_{other.state_} {
+        other.state_ = nullptr;
+    }
 
     Future& operator=(Future&& other) noexcept {
         if (this != &other) {
@@ -209,7 +213,9 @@ template <typename T> class Future {
     Future(const Future&) = delete;
     Future& operator=(const Future&) = delete;
 
-    ~Future() { releaseOwnedState(); }
+    ~Future() {
+        releaseOwnedState();
+    }
 
     /**
      * @brief Blocks until the result is ready, then returns it (or
@@ -228,14 +234,18 @@ template <typename T> class Future {
 
         struct Releaser {
             ResultState<T>* state;
-            ~Releaser() { state->release(); }
+            ~Releaser() {
+                state->release();
+            }
         } releaser{state};
 
         return state->get();
     }
 
     /// @brief Returns whether this Future currently owns a shared state.
-    [[nodiscard]] bool valid() const noexcept { return state_ != nullptr; }
+    [[nodiscard]] bool valid() const noexcept {
+        return state_ != nullptr;
+    }
 
   private:
     void releaseOwnedState() noexcept {

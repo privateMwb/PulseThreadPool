@@ -28,15 +28,11 @@
 
 namespace ThreadPoolPro::Detail {
 
-
 // ============================================================
 //  Section 1 — Move Semantics
 // ============================================================
 
-Task::Task(Task&& other) noexcept
-    : vtable_{other.vtable_}
-    , isHeap_{other.isHeap_}
-{
+Task::Task(Task&& other) noexcept : vtable_{other.vtable_}, isHeap_{other.isHeap_} {
     if (!vtable_)
         return;
 
@@ -77,7 +73,6 @@ Task& Task::operator=(Task&& other) noexcept {
     return *this;
 }
 
-
 // ============================================================
 //  Section 2 — Destructor
 // ============================================================
@@ -85,7 +80,6 @@ Task& Task::operator=(Task&& other) noexcept {
 Task::~Task() noexcept {
     reset();
 }
-
 
 // ============================================================
 //  Section 3 — Invocation
@@ -103,7 +97,6 @@ void Task::operator()() {
     vtable_->invoke_(target());
 }
 
-
 // ============================================================
 //  Section 4 — State Queries
 // ============================================================
@@ -111,7 +104,6 @@ void Task::operator()() {
 Task::operator bool() const noexcept {
     return vtable_ != nullptr;
 }
-
 
 // ============================================================
 //  Section 5 — Internal Helpers

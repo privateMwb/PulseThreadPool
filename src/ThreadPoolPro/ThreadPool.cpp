@@ -59,7 +59,8 @@ std::uint32_t nextStealOffset(std::uint32_t bound) noexcept {
         // starts differently. The `| 1u` guards against a zero seed,
         // which would make xorshift32 degenerate (stuck at 0 forever).
         stealRngState =
-            static_cast<std::uint32_t>(std::hash<std::thread::id>{}(std::this_thread::get_id())) | 1u;
+            static_cast<std::uint32_t>(std::hash<std::thread::id>{}(std::this_thread::get_id())) |
+            1u;
     }
 
     stealRngState ^= stealRngState << 13;
@@ -71,7 +72,6 @@ std::uint32_t nextStealOffset(std::uint32_t bound) noexcept {
 
 } // namespace
 
-
 // ============================================================
 //  Section 1 — Static Thread State
 // ============================================================
@@ -80,32 +80,23 @@ thread_local ThreadPool::Worker* ThreadPool::currentWorker_ = nullptr;
 thread_local std::size_t ThreadPool::currentWorkerIndex_ = 0;
 thread_local bool ThreadPool::selfDetachRequested_ = false;
 
-
 // ============================================================
 //  Section 2 — Constructors & Destructor
 // ============================================================
 
 ThreadPool::ThreadPool(std::size_t threadCount)
-    : workerCount_{threadCount == 0 ? 1 : threadCount}
-    , workers_(workerCount_)
-    // Sized independently of workerCount_: shards are contended not just
-    // by producers (who round-robin across them) but by every worker's
-    // fetchTask() *and* any thread blocked in waitIdle() helping drain
-    // (see fetchTaskExternal()) — with a small pool, that consumer-side
-    // headcount alone can exceed a shard count tied 1:1 to workerCount_,
-    // making shard-mutex contention the dominant cost for short tasks.
-    , injectionShardCount_{workerCount_ * 2 < 16 ? std::size_t{16} : workerCount_ * 2}
-    , injectionShards_(injectionShardCount_)
-    , injectionRoundRobin_{0}
-    , wakeToken_{0}
-    , runState_{RunState::Running}
-    , paused_{false}
-    , activeTasks_{0}
-    , exceptionCounter_{0}
-    , pendingTasks_{0}
-    , idleWorkers_{0}
-    , waitIdleWaiters_{0}
-{
+    : workerCount_{threadCount == 0 ? 1 : threadCount}, workers_(workerCount_)
+      // Sized independently of workerCount_: shards are contended not just
+      // by producers (who round-robin across them) but by every worker's
+      // fetchTask() *and* any thread blocked in waitIdle() helping drain
+      // (see fetchTaskExternal()) — with a small pool, that consumer-side
+      // headcount alone can exceed a shard count tied 1:1 to workerCount_,
+      // making shard-mutex contention the dominant cost for short tasks.
+      ,
+      injectionShardCount_{workerCount_ * 2 < 16 ? std::size_t{16} : workerCount_ * 2},
+      injectionShards_(injectionShardCount_), injectionRoundRobin_{0}, wakeToken_{0},
+      runState_{RunState::Running}, paused_{false}, activeTasks_{0}, exceptionCounter_{0},
+      pendingTasks_{0}, idleWorkers_{0}, waitIdleWaiters_{0} {
     // Borrow already-running threads from the global market instead of
     // spawning new ones — see Detail/ThreadMarket.h. Only however many
     // threads the market's idle pool can't currently cover actually pay
@@ -122,7 +113,6 @@ ThreadPool::ThreadPool(std::size_t threadCount)
 ThreadPool::~ThreadPool() {
     shutdown();
 }
-
 
 // ============================================================
 //  Section 3 — Execution Control
@@ -192,8 +182,8 @@ void ThreadPool::waitIdle() noexcept {
 }
 
 void ThreadPool::shutdown(ShutdownMode mode) noexcept {
-    RunState desired =
-        (mode == ShutdownMode::FinishTasks) ? RunState::ShuttingDownFinish : RunState::ShuttingDownDiscard;
+    RunState desired = (mode == ShutdownMode::FinishTasks) ? RunState::ShuttingDownFinish
+                                                           : RunState::ShuttingDownDiscard;
     RunState expected = RunState::Running;
 
     // Single CAS on the combined run/shutdown state elects exactly one
@@ -235,7 +225,6 @@ void ThreadPool::shutdown(ShutdownMode mode) noexcept {
     }
 }
 
-
 // ============================================================
 //  Section 4 — Runtime Statistics
 // ============================================================
@@ -264,7 +253,6 @@ bool ThreadPool::empty() const noexcept {
     return pendingTasks_.load(std::memory_order_relaxed) == 0;
 }
 
-
 // ============================================================
 //  Section 5 — State Queries
 // ============================================================
@@ -276,7 +264,6 @@ bool ThreadPool::isPaused() const noexcept {
 bool ThreadPool::isStopped() const noexcept {
     return runState_.load(std::memory_order_relaxed) != RunState::Running;
 }
-
 
 // ============================================================
 //  Section 6 — Worker Execution
@@ -416,7 +403,6 @@ void ThreadPool::workerLoop(std::size_t index) {
     }
 }
 
-
 // ============================================================
 //  Section 7 — Task Retrieval
 // ============================================================
@@ -480,7 +466,6 @@ std::optional<ThreadPool::Task> ThreadPool::fetchTask(std::size_t index) {
     return std::nullopt;
 }
 
-
 std::optional<ThreadPool::Task> ThreadPool::fetchTaskExternal() {
     if (workerCount_ > 0) {
         std::size_t offset = nextStealOffset(static_cast<std::uint32_t>(workerCount_));
@@ -517,7 +502,6 @@ std::optional<ThreadPool::Task> ThreadPool::fetchTaskExternal() {
     return std::nullopt;
 }
 
-
 // ============================================================
 //  Section 8 — Internal Task Submission
 // ============================================================
@@ -534,7 +518,8 @@ void ThreadPool::submit(Task&& task) {
         // locks instead of funneling everything through one — the
         // scenario that made the single-queue version's contention
         // scale badly with worker count.
-        std::size_t shardIndex = injectionRoundRobin_.fetch_add(1, std::memory_order_relaxed) % injectionShardCount_;
+        std::size_t shardIndex =
+            injectionRoundRobin_.fetch_add(1, std::memory_order_relaxed) % injectionShardCount_;
         InjectionShard& shard = injectionShards_[shardIndex];
 
         std::lock_guard<std::mutex> lock(shard.mutex_);
@@ -554,7 +539,6 @@ void ThreadPool::submit(Task&& task) {
     if (idleWorkers_.load(std::memory_order_acquire) != 0)
         wakeOne();
 }
-
 
 // ============================================================
 //  Section 9 — Worker Wakeup

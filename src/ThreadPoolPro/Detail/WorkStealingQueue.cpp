@@ -28,16 +28,12 @@
 
 namespace ThreadPoolPro::Detail {
 
-
 // ============================================================
 //  Section 1 — Constructors & Destructor
 // ============================================================
 
 WorkStealingQueue::WorkStealingQueue(std::size_t initialCapacity)
-    : topIndex_{0}
-    , bottomIndex_{0}
-    , buffer_{nullptr}
-{
+    : topIndex_{0}, bottomIndex_{0}, buffer_{nullptr} {
     assert(initialCapacity > 0);
     assert(std::has_single_bit(initialCapacity));
 
@@ -76,7 +72,6 @@ WorkStealingQueue::~WorkStealingQueue() {
         freeHead_ = next;
     }
 }
-
 
 // ============================================================
 //  Section 2 — Queue Operations
@@ -132,7 +127,7 @@ std::optional<Task> WorkStealingQueue::popBottom() {
 
     if (top == bottom) {
         if (!topIndex_.compare_exchange_strong(top, top + 1, std::memory_order_seq_cst,
-                                                std::memory_order_relaxed)) {
+                                               std::memory_order_relaxed)) {
             bottomIndex_.store(bottom + 1, std::memory_order_relaxed);
             return std::nullopt;
         }
@@ -159,7 +154,7 @@ std::optional<Task> WorkStealingQueue::steal() {
     Buffer* buffer = buffer_.load(std::memory_order_acquire);
 
     if (!topIndex_.compare_exchange_strong(top, top + 1, std::memory_order_seq_cst,
-                                            std::memory_order_relaxed)) {
+                                           std::memory_order_relaxed)) {
         return std::nullopt;
     }
 
@@ -174,7 +169,6 @@ std::optional<Task> WorkStealingQueue::steal() {
 
     return result;
 }
-
 
 // ============================================================
 //  Section 3 — Node Recycling
@@ -212,7 +206,6 @@ void WorkStealingQueue::releaseNode(Task* node) noexcept {
     freeHead_ = freeNode;
     ++freeCount_;
 }
-
 
 // ============================================================
 //  Section 4 — Capacity

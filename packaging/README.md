@@ -113,9 +113,9 @@ target_link_libraries(test PRIVATE ThreadPoolPro::ThreadPoolPro)
 EOF
 
 cat > main.cpp << 'EOF'
-#include <ThreadPoolPro/LRUCache.h>
+#include <ThreadPoolPro/ThreadPool.h>
 int main() {
-    rain::LRUCache<std::string, int> cache(3);
+    rain::ThreadPool pool(4);
     return 0;
 }
 EOF
@@ -186,9 +186,9 @@ target_link_libraries(test PRIVATE ThreadPoolPro::ThreadPoolPro)
 EOF
 
 cat > main.cpp << 'EOF'
-#include <ThreadPoolPro/LRUCache.h>
+#include <ThreadPoolPro/ThreadPool.h>
 int main() {
-    rain::LRUCache<std::string, int> cache(3);
+    rain::ThreadPool pool(4);
     return 0;
 }
 EOF
