@@ -1,7 +1,7 @@
 {
   "name": "threadpoolpro",
   "version": "1.0.0",
-  "description": "Header-only, work-stealing C++ thread pool with lock-free per-worker queues, type-erased SBO task storage, and a lightweight Future replacing std::packaged_task/std::future.",
+  "description": "Work-stealing C++ thread pool with lock-free per-worker queues, type-erased SBO task storage, and a lightweight Future replacing std::packaged_task/std::future.",
   "homepage": "https://github.com/privateMwb/ThreadPoolPro",
   "license": "MIT",
   "dependencies": [

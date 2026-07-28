@@ -11,7 +11,7 @@
 # ============================================================
 
 PROJECT_NAME            = "ThreadPoolPro"
-PROJECT_BRIEF           = "Header-only, work-stealing C++ thread pool with lock-free per-worker queues, type-erased SBO task storage, and a lightweight Future replacing std::packaged_task/std::future."
+PROJECT_BRIEF           = "Work-stealing C++ thread pool with lock-free per-worker queues, type-erased SBO task storage, and a lightweight Future replacing std::packaged_task/std::future."
 
 OUTPUT_DIRECTORY        = .
 
