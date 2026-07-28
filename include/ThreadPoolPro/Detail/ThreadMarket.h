@@ -5,15 +5,17 @@
 
 #pragma once
 
+// clang-format off
 #include <ThreadPoolPro/Detail/Utility.h> // CacheLineSize
 
-#include <atomic>
-#include <cstddef>
-#include <functional>
-#include <memory>
-#include <mutex>
-#include <thread>
-#include <vector>
+#include <atomic>     // std::atomic
+#include <cstddef>    // std::size_t
+#include <functional> // std::function
+#include <memory>     // std::unique_ptr
+#include <mutex>      // std::mutex
+#include <thread>     // std::thread
+#include <vector>     // std::vector
+// clang-format on
 
 namespace ThreadPoolPro::Detail {
 
@@ -101,3 +103,8 @@ class ThreadMarket {
 };
 
 } // namespace ThreadPoolPro::Detail
+
+/// @brief Short alias so this library can be used as `rain::ThreadPool`,
+/// while its true namespace (and all internal diagnostics) remains
+/// `ThreadPoolPro`. Repeated identically in every header of this project.
+namespace rain = ThreadPoolPro;

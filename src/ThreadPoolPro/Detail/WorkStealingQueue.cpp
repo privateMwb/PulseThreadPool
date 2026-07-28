@@ -61,11 +61,6 @@ WorkStealingQueue::~WorkStealingQueue() {
 
     delete buffer;
 
-    // Pull in anything thieves recycled via remoteFreeHead_ but that
-    // never got drained during normal operation, so it's freed below
-    // along with everything already on freeHead_ rather than leaked.
-    drainRemoteFreeList();
-
     // Release the recycled-node free list. Each node's storage was
     // last constructed as a FreeNode (its Task was already destroyed in
     // releaseNode()), so this frees raw memory rather than deleting a
@@ -173,23 +168,9 @@ std::optional<Task> WorkStealingQueue::steal() {
 
     // Cross-thread: this runs on a thief thread, never the owner, so it
     // must not touch the owner-thread-only free list — see
-    // releaseNode()'s doc comment. Recycle through the lock-free
-    // remoteFreeHead_ stack instead of a real delete: under steal-heavy
-    // contention (many thieves, high task turnover) a genuine
-    // free()/malloc() round trip per stolen task was the dominant cost,
-    // and the global allocator's own internal locking made it worse as
-    // thief count grew. A single CAS push here is far cheaper and keeps
-    // the memory in play for acquireNode() to reuse — see
-    // drainRemoteFreeList().
-    ptr->~Task();
-
-    FreeNode* node = ::new (static_cast<void*>(ptr)) FreeNode{};
-    FreeNode* head = remoteFreeHead_.load(std::memory_order_relaxed);
-
-    do {
-        node->next = head;
-    } while (!remoteFreeHead_.compare_exchange_weak(head, node, std::memory_order_release,
-                                                      std::memory_order_relaxed));
+    // releaseNode()'s doc comment. Plain delete is safe here since it
+    // goes through the global allocator, which is thread-safe.
+    delete ptr;
 
     return result;
 }
@@ -200,9 +181,6 @@ std::optional<Task> WorkStealingQueue::steal() {
 // ============================================================
 
 Task* WorkStealingQueue::acquireNode(Task&& task) {
-    if (!freeHead_)
-        drainRemoteFreeList();
-
     if (freeHead_) {
         void* raw = freeHead_;
         freeHead_ = freeHead_->next;
@@ -216,30 +194,6 @@ Task* WorkStealingQueue::acquireNode(Task&& task) {
     } else {
         void* raw = ::operator new(sizeof(Task));
         return ::new (raw) Task(std::move(task));
-    }
-}
-
-void WorkStealingQueue::drainRemoteFreeList() noexcept {
-    // Single atomic exchange claims the whole chain thieves have pushed
-    // since the last drain — no CAS loop needed here since this is the
-    // only (single) consumer of remoteFreeHead_.
-    FreeNode* remote = remoteFreeHead_.exchange(nullptr, std::memory_order_acquire);
-
-    while (remote) {
-        FreeNode* next = remote->next;
-
-        if (freeCount_ >= TaskFreeListCapacity) {
-            if constexpr (alignof(Task) > __STDCPP_DEFAULT_NEW_ALIGNMENT__)
-                ::operator delete(static_cast<void*>(remote), std::align_val_t(alignof(Task)));
-            else
-                ::operator delete(static_cast<void*>(remote));
-        } else {
-            remote->next = freeHead_;
-            freeHead_ = remote;
-            ++freeCount_;
-        }
-
-        remote = next;
     }
 }
 

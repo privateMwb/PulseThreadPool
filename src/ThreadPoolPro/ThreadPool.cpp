@@ -88,8 +88,6 @@ thread_local bool ThreadPool::selfDetachRequested_ = false;
 ThreadPool::ThreadPool(std::size_t threadCount)
     : workerCount_{threadCount == 0 ? 1 : threadCount}
     , workers_(workerCount_)
-    , nextToStart_{EagerStartCount < workerCount_ ? EagerStartCount : workerCount_}
-    , startsInFlight_{0}
     // Sized independently of workerCount_: shards are contended not just
     // by producers (who round-robin across them) but by every worker's
     // fetchTask() *and* any thread blocked in waitIdle() helping drain
@@ -115,17 +113,9 @@ ThreadPool::ThreadPool(std::size_t threadCount)
     // reuses what's already warm.
     auto leased = Detail::ThreadMarket::instance().lease(workerCount_);
 
-    // Every leased thread is recorded now (indices/ownership need it),
-    // but only the first EagerStartCount are actually assign()ed — and
-    // therefore actually woken — here. The rest stay parked in the
-    // market's idle-thread sense (already handed to this pool, but not
-    // yet given a job) until submit() ramps them up on real demand; see
-    // nextToStart_'s doc comment for why.
     for (std::size_t i = 0; i < workerCount_; ++i) {
         workers_[i].marketThread_ = leased[i];
-
-        if (i < EagerStartCount)
-            leased[i]->assign([this, i] { workerLoop(i); });
+        leased[i]->assign([this, i] { workerLoop(i); });
     }
 }
 
@@ -215,32 +205,6 @@ void ThreadPool::shutdown(ShutdownMode mode) noexcept {
         return;
 
     wakeAll();
-
-    // Any worker never actually started (see submit()'s lazy-ramp
-    // section) must be started now: waitDone() below assumes every
-    // worker's job has at least been assign()ed, since an unassigned
-    // MarketThread's waitDone() returns immediately (mistaking "never
-    // started" for "already finished"). Claiming the whole remaining
-    // range via one exchange — the same atomic submit() claims
-    // individual indices from — guarantees no index is ever started
-    // twice. Each newly-started worker sees the runState_ update above
-    // at the very first check in workerLoop() and returns almost
-    // immediately, so this costs little even for a pool that never ran
-    // a single task.
-    std::size_t claimed = nextToStart_.exchange(workerCount_, std::memory_order_acq_rel);
-
-    for (std::size_t i = claimed; i < workerCount_; ++i)
-        workers_[i].marketThread_->assign([this, i] { workerLoop(i); });
-
-    // A submit() call may have already won a claim on some index below
-    // `claimed` (via compare_exchange, racing with the exchange above)
-    // but not yet finished calling assign() on it. Wait that out before
-    // touching any worker below — otherwise the waitDone() loop could
-    // run ahead of that pending assign() and misread the same "never
-    // started" state as "already finished". Expected to resolve almost
-    // immediately; see startsInFlight_'s doc comment.
-    while (startsInFlight_.load(std::memory_order_acquire) != 0)
-        std::this_thread::yield();
 
     // A worker thread cannot join itself (it would deadlock, or
     // std::terminate depending on implementation). If shutdown() was
@@ -587,36 +551,8 @@ void ThreadPool::submit(Task&& task) {
     // already counted in pendingTasks_ by the time it checks — and if a
     // worker is already blocked, it must have incremented idleWorkers_
     // strictly before blocking, so this check will see it.
-    if (idleWorkers_.load(std::memory_order_acquire) != 0) {
+    if (idleWorkers_.load(std::memory_order_acquire) != 0)
         wakeOne();
-        return;
-    }
-
-    // No currently-running worker is idle to hand this task to
-    // directly — either every started worker is busy, or (just after
-    // construction) only EagerStartCount of them have ever been
-    // started at all. Ramp up one more reserve worker rather than
-    // relying on all of them having been started eagerly — see
-    // nextToStart_'s doc comment. A monotonic peek first avoids the
-    // startsInFlight_ RMW entirely in the common steady-state case
-    // (every worker already started), since nextToStart_ only ever
-    // increases up to workerCount_.
-    std::size_t next = nextToStart_.load(std::memory_order_relaxed);
-
-    if (next >= workerCount_)
-        return;
-
-    startsInFlight_.fetch_add(1, std::memory_order_acq_rel);
-
-    while (next < workerCount_) {
-        if (nextToStart_.compare_exchange_weak(next, next + 1, std::memory_order_acq_rel,
-                                                std::memory_order_relaxed)) {
-            workers_[next].marketThread_->assign([this, next] { workerLoop(next); });
-            break;
-        }
-    }
-
-    startsInFlight_.fetch_sub(1, std::memory_order_acq_rel);
 }
 
 

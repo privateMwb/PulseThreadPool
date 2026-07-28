@@ -3,7 +3,9 @@
  * @brief ThreadMarket / MarketThread implementation.
  */
 
-#include <ThreadPoolPro/Detail/ThreadMarket.h>
+// clang-format off
+#include <ThreadPoolPro/Detail/ThreadMarket.h> // ThreadMarket — the class this file implements
+// clang-format on
 
 namespace ThreadPoolPro::Detail {
 
