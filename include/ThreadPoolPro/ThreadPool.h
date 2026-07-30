@@ -5,9 +5,9 @@
  *
  * @version         2.0.0
  *
- * @copyright       Copyright (c) 2026 Your Name
+ * @copyright       Copyright (c) 2026 MWB
  *                  All rights reserved.
- *                  https://github.com/yourname/PulseThreadPool
+ *                  https://github.com/privateMwb/ThreadPoolPro
  *
  * @attention       This source is released under the MIT license
  *                  SPDX-License-Identifier: MIT
