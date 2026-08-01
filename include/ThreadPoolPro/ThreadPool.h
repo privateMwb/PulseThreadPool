@@ -329,9 +329,18 @@ class ThreadPool {
 
 } // namespace ThreadPoolPro
 
-#include "ThreadPool.tpp"
+/// @brief Umbrella alias so this library's types are reachable as
+/// `rain::ThreadPool`, alongside every other project library, while its
+/// true namespace (and all internal diagnostics) remains `ThreadPoolPro`.
+/// Reopens `rain` rather than aliasing it, since multiple libraries each
+/// contribute their own names into the same `rain` namespace -- an alias
+/// (`namespace rain = ThreadPoolPro;`) can only ever bind to one target and
+/// collides the moment a second library declares its own `rain` alias to
+/// something else. Repeated identically in every header of this project --
+/// reopening (unlike aliasing) is safe to repeat, since it doesn't
+/// collide with itself.
+namespace rain {
+using namespace ThreadPoolPro;
+}
 
-/// @brief Short alias so this library can be used as `rain::ThreadPool`,
-/// while its true namespace (and all internal diagnostics) remains
-/// `ThreadPoolPro`. Repeated identically in every header of this project.
-namespace rain = ThreadPoolPro;
+#include "ThreadPool.tpp"

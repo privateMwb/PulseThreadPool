@@ -151,8 +151,3 @@ class WorkStealingQueue {
 };
 
 } // namespace ThreadPoolPro::Detail
-
-/// @brief Short alias so this library can be used as `rain::ThreadPool`,
-/// while its true namespace (and all internal diagnostics) remains
-/// `ThreadPoolPro`. Repeated identically in every header of this project.
-namespace rain = ThreadPoolPro;

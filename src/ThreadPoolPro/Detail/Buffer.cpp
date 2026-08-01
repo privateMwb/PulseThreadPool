@@ -67,7 +67,3 @@ Buffer* Buffer::grow(std::size_t bottom, std::size_t top) {
 
 } // namespace ThreadPoolPro::Detail
 
-/// @brief Short alias so this library can be used as `rain::ThreadPool`,
-/// while its true namespace (and all internal diagnostics) remains
-/// `ThreadPoolPro`. Repeated identically in every file of this project.
-namespace rain = ThreadPoolPro;
